@@ -2,7 +2,7 @@
 #include "core/utils.h"
 #include <CYD28_TouchscreenR.h>
 #include <interface.h>
-CYD28_TouchR touch(320, 240);
+CYD28_TouchR touch(240, 320);
 
 #ifdef WAVESENTRY
 #include <RotaryEncoder.h>
@@ -68,7 +68,7 @@ void InputHandler(void) {
             t = touch.getPointScaled();
             tm = millis();
             if (bruceConfigPins.rotation == 3) {
-                t.y = (tftHeight + 20) - t.y;
+                t.y = tftHeight - t.y;
                 t.x = tftWidth - t.x;
             }
             if (bruceConfigPins.rotation == 0) {
