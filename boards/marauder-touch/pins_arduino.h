@@ -89,13 +89,13 @@ static const uint8_t ADC2 = 8;
 #define MINBRIGHT 160
 
 #define USER_SETUP_LOADED 1
-#define ILI9341_DRIVER 1
+#define ST7789_2_DRIVER 1
 #define TFT_MISO 19
 #define TFT_MOSI 23
 #define TFT_SCLK 18
-#define TFT_CS 17
-#define TFT_DC 16
-#define TFT_RST 5
+#define TFT_CS 27
+#define TFT_DC 26
+#define TFT_RST 4
 #define TFT_BL 32
 #define TFT_BACKLIGHT_ON HIGH
 #define SMOOTH_FONT 1
