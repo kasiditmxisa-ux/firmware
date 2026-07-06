@@ -155,7 +155,7 @@ void resetGlobalState() {
 ***************************************************************************************/
 void send_raw_frame(const uint8_t *frame_buffer, int size) {
     esp_wifi_80211_tx(WIFI_IF_AP, frame_buffer, size, false);
-    vTaskDelay(1 / portTICK_RATE_MS);
+    vTaskDelay(1 / portTICK_PERIOD_MS);
     esp_wifi_80211_tx(WIFI_IF_AP, frame_buffer, size, false);
     vTaskDelay(1 / portTICK_PERIOD_MS);
     esp_wifi_80211_tx(WIFI_IF_AP, frame_buffer, size, false);
