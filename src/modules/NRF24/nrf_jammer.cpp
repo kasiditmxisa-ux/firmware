@@ -53,7 +53,7 @@ static NrfJamConfig jamConfigs[NRF_JAM_MODE_COUNT] = {
     /* WIFI       */ {3, 1, 0, 2, 20, 0, 0}, // Turbo flood WiFi channels
     /* BLE        */ {3, 1, 0, 2, 20, 1, 0}, // Turbo flood, random hop
     /* BLE_ADV    */ {3, 1, 0, 2, 20, 0, 0}, // Turbo flood adv channels
-    /* BLUETOOTH  */ {3, 1, 0, 2, 20, 1, 0}, // Turbo flood + random (FHSS)
+    /* BLUETOOTH  */ {3, 1, 0, 0, 1, 1, 0},  // randomHop = 1
     /* USB        */ {3, 1, 0, 2, 20, 1, 0}, // Turbo flood + random
     /* VIDEO      */ {3, 1, 0, 2, 20, 0, 0}, // Turbo flood video band
     /* RC         */ {3, 1, 0, 2, 20, 1, 0}, // Turbo flood + random (FHSS)
