@@ -861,12 +861,16 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     // Layout constants (320x240)
     const uint8_t TOP_MARGIN = 2;
     const uint8_t INFO_H = 55;
-    const uint8_t GRAPH_H = 35;         // Waterfall height
+    const uint8_t GRAPH_H = 35;         // ความสูง spectrum
     const uint8_t CLIENT_HEADER_H = 14;
     const uint8_t ROW_H = 14;
     const uint8_t MAX_ROWS = 5;
     const uint8_t TABLE_Y = TOP_MARGIN + INFO_H + GRAPH_H + CLIENT_HEADER_H;
     const uint8_t GRAPH_Y = TOP_MARGIN + INFO_H;
+
+    // Spectrum bins (160 แท่ง กว้าง 2px)
+    const uint8_t NUM_BINS = 160;
+    static uint8_t amplitudes[NUM_BINS] = {0};
 
     uint32_t lastUIUpdate = 0;
     uint16_t count = 0;
@@ -875,7 +879,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     bool isPaused = true;
     bool lastSel = false;
 
-    // Scroll offsets (marquee)
+    // Scroll offsets
     static uint8_t apScrollOffset = 0;
     static uint8_t macScrollOffset = 0;
     unsigned long lastScrollUpdate = 0;
@@ -889,11 +893,11 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     unsigned long lastCleanupTime = 0;
     const unsigned long CLEANUP_INTERVAL_MS = 5000;
 
-    // ✅ เคลียร์ footer ทันที
+    // เคลียร์ footer
     tft.fillRect(0, tftHeight - 14, tftWidth, 14, bruceConfig.bgColor);
 
     while (true) {
-        // ===== Pause / Resume ด้วยปุ่ม OK =====
+        // ===== Pause / Resume =====
         bool selNow = check(SelPress);
         if (selNow && !lastSel) {
             isPaused = !isPaused;
@@ -903,7 +907,6 @@ void target_atk(String tssid, String mac, uint8_t channel) {
         if (EscPress) break;
 
         if (!isPaused) {
-            // Deauth 100 รอบ
             for (int i = 0; i < 100; i++) {
                 send_raw_frame(deauth_frame, sizeof(deauth_frame_default));
                 count += 3;
@@ -919,7 +922,6 @@ void target_atk(String tssid, String mac, uint8_t channel) {
                 if (isPaused) break;
             }
 
-            // refresh channel
             static uint16_t refreshCnt = 0;
             refreshCnt += 300;
             if (refreshCnt >= 3000) {
@@ -930,28 +932,25 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             delay(50);
         }
 
-        // ===== อัปเดต scroll offsets ทุก 0.8 วิ =====
+        // ===== Scroll offsets =====
         if (millis() - lastScrollUpdate > SCROLL_INTERVAL_MS) {
             lastScrollUpdate = millis();
             if (tssid.length() > 18) {
-                apScrollOffset++;
-                if (apScrollOffset > tssid.length() - 18 + 1) apScrollOffset = 0;
-            } else apScrollOffset = 0;
+                apScrollOffset = (apScrollOffset + 1) % (tssid.length() - 17);
+            }
             if (mac.length() > 13) {
-                macScrollOffset++;
-                if (macScrollOffset > mac.length() - 13 + 1) macScrollOffset = 0;
-            } else macScrollOffset = 0;
+                macScrollOffset = (macScrollOffset + 1) % (mac.length() - 12);
+            }
             for (auto &c : g_clients) {
                 char macShort[10]; snprintf(macShort, sizeof(macShort), "%02X:%02X:%02X", c.mac[0], c.mac[1], c.mac[2]);
                 String oui = getOUI(c.mac); String full = String(macShort); if (oui.length()>0) full += " " + oui;
                 if (full.length() > 18) {
-                    c.scrollOffset++;
-                    if (c.scrollOffset > full.length() - 18 + 1) c.scrollOffset = 0;
+                    c.scrollOffset = (c.scrollOffset + 1) % (full.length() - 17);
                 } else c.scrollOffset = 0;
             }
         }
 
-        // ===== ล้าง Client ที่หมดอายุทุก 5 วิ =====
+        // ===== Client cleanup =====
         if (millis() - lastCleanupTime > CLEANUP_INTERVAL_MS) {
             lastCleanupTime = millis();
             unsigned long now = millis();
@@ -963,7 +962,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             for (auto &c : g_clients) c.active = (now - c.last_seen < CLIENT_TIMEOUT);
         }
 
-        // ===== อัปเดต Progress Bar + Footer ทุก 0.5 วิ =====
+        // ===== Footer =====
         if (millis() - lastFooterUpdate > FOOTER_UPDATE_MS) {
             lastFooterUpdate = millis();
             tft.fillRect(0, tftHeight - 14, tftWidth, 14, bruceConfig.bgColor);
@@ -988,7 +987,6 @@ void target_atk(String tssid, String mac, uint8_t channel) {
         if (millis() - lastUIUpdate > 2000) {
             lastUIUpdate = millis();
 
-            // ลบพื้นที่หลัก (ยกเว้น footer)
             tft.fillRect(0, 0, tftWidth, tftHeight - 14, bruceConfig.bgColor);
             tft.drawRect(0, 0, tftWidth, tftHeight, bruceConfig.priColor);
             tft.setTextSize(1);
@@ -996,7 +994,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             int16_t leftX = 4, rightX = tftWidth / 2 + 4;
             int16_t yLeft = TOP_MARGIN + 4, yRight = TOP_MARGIN + 4;
 
-            // ---- คอลัมน์ซ้าย (AP, MAC, Ch, FPS) ----
+            // ---- Info (ซ้าย) ----
             tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
             {
                 String apFull = "AP: " + tssid;
@@ -1016,7 +1014,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             tft.setTextColor(fpsColor, bruceConfig.bgColor);
             tft.drawString("FPS: " + String(fpsValue), leftX, yLeft, 1);
 
-            // ---- คอลัมน์ขวา ----
+            // ---- Info (ขวา) ----
             yRight = TOP_MARGIN + 4;
             tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
             unsigned long elapsed = (millis() - startTime) / 1000;
@@ -1035,58 +1033,69 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             tft.drawString("Clients: " + String(activeCount), rightX, yRight, 1); yRight += 12;
             tft.drawString("Total: " + String(totalFrames), rightX, yRight, 1);
 
-            // ===== Waterfall Spectrogram (FPS-driven) =====
+            // ═══════════════════════════════════
+            //          Frequency Spectrum
+            // ═══════════════════════════════════
             {
+                // สร้าง amplitudes ใหม่ตาม FPS
+                int carrierAmp = map(fpsValue, 0, 6000, 3, GRAPH_H - 4);
+                int noiseFloor = carrierAmp / 3;
+                int centerBin = NUM_BINS / 2;
+
+                for (int i = 0; i < NUM_BINS; i++) {
+                    uint8_t amp;
+                    if (i >= centerBin - 2 && i <= centerBin + 2) {
+                        // Carrier peak
+                        amp = carrierAmp + random(-2, 3);
+                    } else {
+                        // Noise
+                        amp = random(0, noiseFloor + 1);
+                    }
+                    if (amp > GRAPH_H - 2) amp = GRAPH_H - 2;
+                    amplitudes[i] = amp;
+                }
+
+                // วาดพื้นหลังดำ
                 tft.fillRect(0, GRAPH_Y, tftWidth, GRAPH_H, TFT_BLACK);
 
-                // Map FPS 0..6000 → line length 2..GRAPH_H-2
-                int lineLen = map(fpsValue, 0, 6000, 2, GRAPH_H - 4);
-                if (lineLen < 2) lineLen = 2;
-                if (lineLen > GRAPH_H - 4) lineLen = GRAPH_H - 4;
-                int lineTop = GRAPH_Y + (GRAPH_H - lineLen) / 2;
-                int midX = tftWidth / 2;
+                // วาดแท่ง spectrum
+                for (int i = 0; i < NUM_BINS; i++) {
+                    int x = i * 2; // binW=2
+                    int amp = amplitudes[i];
+                    if (amp == 0) continue;
 
-                // Glow layers (เส้นแนวตั้งกลาง)
-                for (int w = 4; w >= 1; w--) {
-                    uint16_t col;
-                    if (w == 4) col = tft.color565(30, 30, 150);
-                    else if (w == 3) col = tft.color565(60, 60, 200);
-                    else if (w == 2) col = tft.color565(120, 120, 255);
-                    else col = TFT_WHITE;
-                    tft.drawFastVLine(midX - w/2, lineTop - w/2, lineLen + w, col);
-                }
-                // จุดเรืองแสงกลาง
-                int dotY = lineTop + lineLen/2;
-                tft.fillCircle(midX, dotY, 2, TFT_WHITE);
-                tft.fillCircle(midX, dotY, 4, tft.color565(50, 50, 180));
-                tft.fillCircle(midX, dotY, 6, tft.color565(20, 20, 100));
+                    // สีฟ้าสว่าง: R ต่ำ, G สูง, B สูง
+                    uint8_t r = amp * 3; if (r > 80) r = 80;
+                    uint8_t g = 100 + amp * 5; if (g > 255) g = 255;
+                    uint8_t b = 200 + amp * 2; if (b > 255) b = 255;
+                    uint16_t col = tft.color565(r, g, b);
 
-                // Noise density ตาม FPS (มาก FPS = มาก noise)
-                int noiseCount = map(fpsValue, 0, 6000, 10, 80);
-                for (int i = 0; i < noiseCount; i++) {
-                    int x = esp_random() % tftWidth;
-                    int y = GRAPH_Y + (esp_random() % GRAPH_H);
-                    uint8_t bri = 50 + (esp_random() % 150);
-                    tft.drawPixel(x, y, tft.color565(bri, bri, 255));
+                    int y0 = GRAPH_Y + GRAPH_H - amp;
+                    tft.fillRect(x, y0, 2, amp, col);
+
+                    // Glow effect: เส้นขอบบนสว่างขึ้น
+                    if (amp > 2) {
+                        tft.drawFastHLine(x, y0, 2, tft.color565(200, 200, 255));
+                        if (amp > 4) {
+                            tft.drawFastHLine(x, y0 + 1, 2, tft.color565(100, 150, 255));
+                        }
+                    }
                 }
 
-                // เส้นแนวนอนบางๆ (คลื่น)
-                for (int i = 0; i < 5; i++) {
-                    int y = GRAPH_Y + (esp_random() % GRAPH_H);
-                    tft.drawFastHLine(0, y, tftWidth, tft.color565(0, 100, 200));
-                    tft.drawFastHLine(0, y-1, tftWidth, tft.color565(0, 50, 100));
-                    tft.drawFastHLine(0, y+1, tftWidth, tft.color565(0, 50, 100));
+                // วาดเส้น grid แนวตั้ง (ทุก 10 bin = 20px)
+                for (int i = 0; i <= NUM_BINS; i += 10) {
+                    int x = i * 2;
+                    tft.drawFastVLine(x, GRAPH_Y, GRAPH_H, tft.color565(30, 30, 70));
                 }
 
-                // แถบหนากลาง (แนวนอน) สีฟ้าขาว — ปรับความสว่างตาม FPS
-                int bandBright = map(fpsValue, 0, 6000, 30, 200);
-                uint16_t bandColor = tft.color565(bandBright/2, bandBright, bandBright);
-                tft.fillRect(0, GRAPH_Y + GRAPH_H/2 - 2, tftWidth, 5, bandColor);
-                // Glow บนล่าง
-                tft.fillRect(0, GRAPH_Y + GRAPH_H/2 - 3, tftWidth, 7, tft.color565(bandBright/4, bandBright/2, bandBright/2));
+                // เส้น noise floor (แนวนอน)
+                int floorY = GRAPH_Y + GRAPH_H - noiseFloor;
+                tft.drawFastHLine(0, floorY, tftWidth, tft.color565(40, 40, 100));
+                // จาง
+                tft.drawFastHLine(0, floorY-1, tftWidth, tft.color565(20, 20, 60));
             }
 
-            // เส้นคั่นใต้กราฟ
+            // เส้นคั่นใต้ spectrum
             tft.drawFastHLine(0, GRAPH_Y + GRAPH_H, tftWidth, TFT_DARKGREY);
 
             // ----- Client Table Header -----
@@ -1096,7 +1105,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             tft.drawString("CLIENT MAC / OUI", leftX + 2, tableY + 1, 1);
             tft.drawString("SEEN", rightX + 10, tableY + 1, 1);
 
-            // ----- Client Rows (zebra + scroll) -----
+            // ----- Client Rows -----
             tableY += CLIENT_HEADER_H;
             int shown = 0;
             for (auto &c : g_clients) {
@@ -1110,8 +1119,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
                 String fullClient = String(macShort); if (oui.length() > 0) fullClient += " " + oui;
                 String clientDisplay;
                 if (fullClient.length() > 18) {
-                    if (c.scrollOffset + 18 <= fullClient.length()) clientDisplay = fullClient.substring(c.scrollOffset, c.scrollOffset + 18);
-                    else clientDisplay = fullClient.substring(c.scrollOffset);
+                    clientDisplay = fullClient.substring(c.scrollOffset, c.scrollOffset + 18);
                 } else clientDisplay = fullClient;
 
                 tft.setTextColor(TFT_WHITE, rowBg);
