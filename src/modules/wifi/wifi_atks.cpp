@@ -823,7 +823,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     esp_wifi_set_promiscuous_rx_cb(promisc_callback);
     esp_wifi_set_promiscuous(true);
 
-    // ===== Layout constants (320x240) =====
+    // Layout constants (320x240)
     const uint8_t HEADER_H = FM * LH + 6;
     const uint8_t INFO_H = 56;
     const uint8_t CLIENT_HEADER_H = 14;
@@ -839,21 +839,20 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     bool isPaused = false;
 
     while (true) {
-        // ===== Pause / Resume  =====
+        // Pause / Resume
         if (check(SelPress)) {
             isPaused = !isPaused;
-            // เมื่อเปลี่ยนสถานะ รีเฟรชหน้าจอทันที
-            lastTime = 0; // บังคับให้วาดใหม่
+            lastTime = 0; // force redraw
         }
-        if (EscPress) break; // ออกจาก loop
+        if (EscPress) break;
 
         if (!isPaused) {
-            // ===== Deauth 100 รอบ =====
+            // Deauth 100 รอบ
             for (int i = 0; i < 100; i++) {
                 send_raw_frame(deauth_frame, sizeof(deauth_frame_default));
                 count += 3;
                 totalFrames += 3;
-                if (EscPress || check(SelPress)) break; // หยุดกลางคันถ้ากดปุ่ม
+                if (EscPress || check(SelPress)) break;
             }
 
             // refresh channel
@@ -863,30 +862,22 @@ void target_atk(String tssid, String mac, uint8_t channel) {
                 wsl_bypasser_send_raw_frame(&target_ap, channel, _default_target);
                 refreshCnt = 0;
             }
-
-            // อัปเดต client status ทุก 2 วิ
-            if (millis() - lastClientUpdate > 2000) {
-                lastClientUpdate = millis();
-                unsigned long now = millis();
-                for (auto &c : g_clients) c.active = (now - c.last_seen < CLIENT_TIMEOUT);
-            }
         } else {
-            // ตอน pause ก็ยังอัปเดต client status ได้
-            if (millis() - lastClientUpdate > 2000) {
-                lastClientUpdate = millis();
-                unsigned long now = millis();
-                for (auto &c : g_clients) c.active = (now - c.last_seen < CLIENT_TIMEOUT);
-            }
             delay(50);
         }
 
-        // ===== วาด UI ทุก 2 วิ =====
+        // อัปเดต client status ทุก 2 วิ
+        if (millis() - lastClientUpdate > 2000) {
+            lastClientUpdate = millis();
+            unsigned long now = millis();
+            for (auto &c : g_clients) c.active = (now - c.last_seen < CLIENT_TIMEOUT);
+        }
+
+        // วาด UI ทุก 2 วิ
         if (millis() - lastTime > 2000) {
-            // ลบพื้นที่ใต้หัวเรื่อง
             tft.fillRect(0, HEADER_H, tftWidth, tftHeight - HEADER_H, bruceConfig.bgColor);
             drawMainBorderWithTitle("Target Deauth");
 
-            // ----- Info Section -----
             tft.setTextSize(FP);
             int16_t x = 4, y = HEADER_H + 4;
             int16_t col2_x = tftWidth / 2 + 4;
@@ -911,10 +902,8 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             snprintf(timeBuf, sizeof(timeBuf), "%02lu:%02lu", elapsed/60, elapsed%60);
             tft.drawString("Time: " + String(timeBuf), col2_x, y, 1); y += 12;
 
-            // Deauth indicator พร้อมจุดกะพริบ (สลับทุก 500ms)
-            tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
+            // Deauth indicator + จุดกะพริบ
             tft.drawString("Deauth:", col2_x, y, 1);
-            // วงกลมกระพริบ (สีเขียว/พื้นหลัง)
             uint16_t circleX = col2_x + 52;
             uint16_t circleY = y + 6;
             if ((millis() / 500) % 2) {
@@ -933,10 +922,10 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             // Total frames
             tft.drawString("Total: " + String(totalFrames), col2_x, y, 1);
 
-            // เส้นคั่น (4)
+            // เส้นคั่น
             tft.drawFastHLine(0, TABLE_Y - 1, tftWidth, TFT_DARKGREY);
 
-            // ----- Client Table Header -----
+            // Client Table Header
             uint8_t tableY = TABLE_Y;
             tft.fillRect(0, tableY, tftWidth, CLIENT_HEADER_H, TFT_DARKGREY);
             tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
@@ -944,13 +933,12 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             tft.drawString("SEEN", col2_x, tableY + 1, 1);
             tft.drawString("STATUS", tftWidth - 50, tableY + 1, 1);
 
-            // ----- Client Rows -----
+            // Client Rows
             tableY += CLIENT_HEADER_H;
             int shown = 0;
             for (auto &c : g_clients) {
                 if (shown >= MAX_ROWS) break;
                 uint16_t rowY = tableY + shown * ROW_H;
-                // zebra striping (แถวคู่/คี่)
                 uint16_t rowBg = (shown % 2 == 0) ? bruceConfig.bgColor : TFT_DARKGREY;
                 tft.fillRect(0, rowY, tftWidth, ROW_H, rowBg);
 
@@ -966,11 +954,11 @@ void target_atk(String tssid, String mac, uint8_t channel) {
                 shown++;
             }
 
-            // Footer (6)
+            // Footer
             tft.setTextColor(TFT_DARKGREY, bruceConfig.bgColor);
             tft.drawString("[ESC] Stop   [OK] Pause", 4, tftHeight - 10, 1);
 
-            count = 0;   // reset FPS counter
+            count = 0;
             lastTime = millis();
         }
     }
