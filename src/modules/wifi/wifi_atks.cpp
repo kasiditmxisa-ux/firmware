@@ -839,27 +839,17 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     unsigned long lastClientUpdate = 0;
     bool isPaused = false;
 
-    // ตัวแปรสำหรับตรวจจับ Touch กลางจอ (edge detection)
-    bool lastTouchCenter = false;
-    uint16_t centerX = tftWidth / 2;
-    uint16_t centerY = tftHeight / 2;
-    const uint16_t TOUCH_RADIUS = 30; // รัศมีพื้นที่แตะ
+    // ตัวแปร edge detection สำหรับปุ่ม OK
+    bool lastSel = false;
 
     while (true) {
-        // ===== ตรวจจับ Touch กลางจอ (ขอบขาขึ้น) =====
-        bool touchNow = false;
-        if (checkTouch()) {
-            uint16_t tx = TouchPoint.x;
-            uint16_t ty = TouchPoint.y;
-            if (abs((int)tx - (int)centerX) < TOUCH_RADIUS && abs((int)ty - (int)centerY) < TOUCH_RADIUS) {
-                touchNow = true;
-            }
-        }
-        if (touchNow && !lastTouchCenter) {
+        // ===== ตรวจจับ Pause ด้วยปุ่ม OK (ขอบขาขึ้น) =====
+        bool selNow = check(SelPress);
+        if (selNow && !lastSel) {
             isPaused = !isPaused;
-            lastTime = 0; // force redraw
+            lastTime = 0; // บังคับวาดใหม่ทันที
         }
-        lastTouchCenter = touchNow;
+        lastSel = selNow;
 
         if (EscPress) break;
 
@@ -871,22 +861,13 @@ void target_atk(String tssid, String mac, uint8_t channel) {
                 totalFrames += 3;
                 if (EscPress) break;
 
-                // ตรวจสอบ touch กลางจอระหว่าง deauth
-                if (checkTouch()) {
-                    uint16_t tx = TouchPoint.x;
-                    uint16_t ty = TouchPoint.y;
-                    if (abs((int)tx - (int)centerX) < TOUCH_RADIUS && abs((int)ty - (int)centerY) < TOUCH_RADIUS) {
-                        if (!lastTouchCenter) {
-                            isPaused = !isPaused;
-                            lastTime = 0;
-                        }
-                        lastTouchCenter = true;
-                    } else {
-                        lastTouchCenter = false;
-                    }
-                } else {
-                    lastTouchCenter = false;
+                // ตรวจสอบปุ่ม OK ภายในลูป (เพื่อหยุดกลางคัน)
+                bool s = check(SelPress);
+                if (s && !lastSel) {
+                    isPaused = !isPaused;
+                    lastTime = 0;
                 }
+                lastSel = s;
                 if (isPaused) break;
             }
 
@@ -898,7 +879,6 @@ void target_atk(String tssid, String mac, uint8_t channel) {
                 refreshCnt = 0;
             }
         } else {
-            // ขณะ Pause ยังอัปเดต client status ได้
             delay(50);
         }
 
@@ -914,7 +894,6 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             tft.fillScreen(bruceConfig.bgColor);
             tft.drawRect(0, 0, tftWidth, tftHeight, bruceConfig.priColor);
 
-            // ----- Info Section -----
             tft.setTextSize(FP);
             int16_t leftX = 4, rightX = tftWidth / 2 + 4;
             int16_t yLeft = TOP_MARGIN + 4, yRight = TOP_MARGIN + 4;
@@ -992,18 +971,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
 
             // Footer
             tft.setTextColor(TFT_DARKGREY, bruceConfig.bgColor);
-            tft.drawString("[ESC] Stop   [Touch center] Pause", 4, tftHeight - 10, 1);
-
-            // วาดวงกลมจาง ๆ ตรงกลาง (บอกจุดให้แตะ)
-            if (!isPaused) {
-                tft.drawCircle(centerX, centerY, TOUCH_RADIUS, TFT_DARKGREY);
-            } else {
-                // ตอน Pause แสดงข้อความ PAUSED กลางจอ
-                tft.setTextColor(TFT_RED, bruceConfig.bgColor);
-                tft.setTextSize(2);
-                tft.drawCentreString("PAUSED", centerX, centerY - 10, 1);
-                tft.setTextSize(FP);
-            }
+            tft.drawString("[ESC] Stop   [OK] Pause", 4, tftHeight - 10, 1);
 
             count = 0;
             lastTime = millis();
