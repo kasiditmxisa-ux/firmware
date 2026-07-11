@@ -800,6 +800,38 @@ AGAIN:
 ** function: target_atk
 ** @brief: Deploy Target deauth
 ***************************************************************************************/
+// ********** ฟังก์ชันเสริม: หา OUI จาก MAC (3 octets แรก) **********
+String getOUI(uint8_t *mac) {
+    // รายชื่อ OUI ยอดนิยม (เพิ่มเติมได้ตามต้องการ)
+    if (mac[0]==0x00 && mac[1]==0x1A && mac[2]==0x11) return "Apple";
+    if (mac[0]==0x00 && mac[1]==0x1B && mac[2]==0x63) return "Apple";
+    if (mac[0]==0x00 && mac[1]==0x1E && mac[2]==0xC2) return "Apple";
+    if (mac[0]==0x00 && mac[1]==0x1F && mac[2]==0xF3) return "Apple";
+    if (mac[0]==0x00 && mac[1]==0x23 && mac[2]==0x6C) return "Apple";
+    if (mac[0]==0x00 && mac[1]==0x25 && mac[2]==0x00) return "Apple";
+    // Samsung
+    if (mac[0]==0x00 && mac[1]==0x16 && mac[2]==0xDB) return "Samsung";
+    if (mac[0]==0x00 && mac[1]==0x1E && mac[2]==0x3A) return "Samsung";
+    if (mac[0]==0x00 && mac[1]==0x1C && mac[2]==0xDF) return "Samsung";
+    // Huawei
+    if (mac[0]==0x00 && mac[1]==0x18 && mac[2]==0x82) return "Huawei";
+    if (mac[0]==0x00 && mac[1]==0x0C && mac[2]==0xE7) return "Huawei";
+    // Xiaomi
+    if (mac[0]==0x00 && mac[1]==0x9E && mac[2]==0xC8) return "Xiaomi";
+    if (mac[0]==0x00 && mac[1]==0x0D && mac[2]==0x3A) return "Xiaomi";
+    // Sony
+    if (mac[0]==0x00 && mac[1]==0x01 && mac[2]==0x4A) return "Sony";
+    if (mac[0]==0x00 && mac[1]==0x04 && mac[2]==0x1F) return "Sony";
+    // Google
+    if (mac[0]==0x00 && mac[1]==0x1A && mac[2]==0x11) return "Google";
+    // Microsoft
+    if (mac[0]==0x00 && mac[1]==0x50 && mac[2]==0xF2) return "Microsoft";
+    // Intel
+    if (mac[0]==0x00 && mac[1]==0x1C && mac[2]==0xBF) return "Intel";
+    // เพิ่มเติมได้เรื่อย ๆ
+    return ""; // unknown
+}
+
 void target_atk(String tssid, String mac, uint8_t channel) {
     resetGlobalState();
     cleanlyStopWebUiForWiFiFeature();
@@ -832,25 +864,27 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     const uint8_t MAX_ROWS = 6;
     const uint8_t TABLE_Y = TOP_MARGIN + INFO_H + CLIENT_HEADER_H;
 
-    uint32_t lastTime = millis();
-    uint16_t count = 0;
+    uint32_t lastTime = millis();           // ใช้สำหรับ UI refresh
+    uint16_t count = 0;                    // เฟรมนับภายในช่วง 2 วิ
     uint32_t totalFrames = 0;
     unsigned long startTime = millis();
     unsigned long lastClientUpdate = 0;
     bool isPaused = false;
 
-    // ตัวแปร edge detection สำหรับปุ่ม OK
     bool lastSel = false;
 
+    // ---- ตัวแปรสำหรับ footer แบบไดนามิก (countdown) ----
+    unsigned long lastFooterDraw = 0;
+    const unsigned long FOOTER_INTERVAL = 500; // อัปเดตทุก 0.5 วิ
+
     while (true) {
-        // ===== ตรวจจับ Pause ด้วยปุ่ม OK (ขอบขาขึ้น) =====
+        // ===== Pause / Resume ด้วยปุ่ม OK =====
         bool selNow = check(SelPress);
         if (selNow && !lastSel) {
             isPaused = !isPaused;
-            lastTime = 0; // บังคับวาดใหม่ทันที
+            lastTime = 0; // force redraw
         }
         lastSel = selNow;
-
         if (EscPress) break;
 
         if (!isPaused) {
@@ -861,7 +895,6 @@ void target_atk(String tssid, String mac, uint8_t channel) {
                 totalFrames += 3;
                 if (EscPress) break;
 
-                // ตรวจสอบปุ่ม OK ภายในลูป (เพื่อหยุดกลางคัน)
                 bool s = check(SelPress);
                 if (s && !lastSel) {
                     isPaused = !isPaused;
@@ -889,16 +922,31 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             for (auto &c : g_clients) c.active = (now - c.last_seen < CLIENT_TIMEOUT);
         }
 
-        // ===== วาด UI ทุก 2 วิ =====
+        // ===== อัปเดต footer แบบไดนามิก (countdown) ทุก 0.5 วิ =====
+        if (millis() - lastFooterDraw > FOOTER_INTERVAL) {
+            lastFooterDraw = millis();
+            // ลบ footer เดิม
+            tft.fillRect(0, tftHeight - 12, tftWidth, 12, bruceConfig.bgColor);
+            // คำนวณเวลาที่เหลือจนกว่า UI จะ refresh ครั้งต่อไป (จาก lastTime + 2000)
+            long remaining = 2000 - (millis() - lastTime);
+            if (remaining < 0) remaining = 0;
+            float sec = remaining / 1000.0;
+            String footerStr = "[ESC] Stop  [OK] Pause  next " + String(sec, 1) + "s";
+            tft.setTextColor(TFT_DARKGREY, bruceConfig.bgColor);
+            tft.drawString(footerStr, 4, tftHeight - 11, 1);
+        }
+
+        // ===== วาด UI หลักทุก 2 วิ =====
         if (millis() - lastTime > 2000) {
-            tft.fillScreen(bruceConfig.bgColor);
+            // ลบหน้าจอทั้งหมด (ยกเว้น footer เราไม่ลบเพราะอัปเดตแยก)
+            tft.fillRect(0, 0, tftWidth, tftHeight - 14, bruceConfig.bgColor);
             tft.drawRect(0, 0, tftWidth, tftHeight, bruceConfig.priColor);
 
             tft.setTextSize(FP);
             int16_t leftX = 4, rightX = tftWidth / 2 + 4;
             int16_t yLeft = TOP_MARGIN + 4, yRight = TOP_MARGIN + 4;
 
-            // ซ้าย
+            // ---- ซ้าย ----
             tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
             tft.drawString("AP: " + tssid.substring(0, 16), leftX, yLeft, 1); yLeft += 12;
             tft.drawString("MAC: " + mac.substring(0, 12), leftX, yLeft, 1); yLeft += 12;
@@ -909,7 +957,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             tft.setTextColor(fpsColor, bruceConfig.bgColor);
             tft.drawString("FPS: " + String(fpsValue), leftX, yLeft, 1);
 
-            // ขวา
+            // ---- ขวา ----
             yRight = TOP_MARGIN + 4;
             tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
             unsigned long elapsed = (millis() - startTime) / 1000;
@@ -929,10 +977,10 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             tft.drawString(isPaused ? "OFF" : "ON", rightX + 60, yRight, 1);
             yRight += 12;
 
-            // Client count
+            // Clients count (แสดงเฉพาะ active ปัจจุบัน)
             int activeCount = 0;
             for (auto &c : g_clients) if (c.active) activeCount++;
-            tft.drawString("Clients: " + String(activeCount) + "/" + String(g_clients.size()), rightX, yRight, 1); yRight += 12;
+            tft.drawString("Clients: " + String(activeCount), rightX, yRight, 1); yRight += 12;
 
             // Total frames
             tft.drawString("Total: " + String(totalFrames), rightX, yRight, 1);
@@ -940,28 +988,34 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             // เส้นคั่น
             tft.drawFastHLine(0, TABLE_Y - 1, tftWidth, TFT_DARKGREY);
 
-            // ----- Client Table Header -----
+            // ----- Client Table Header (สีใหม่ NAVY) -----
             uint8_t tableY = TABLE_Y;
-            tft.fillRect(0, tableY, tftWidth, CLIENT_HEADER_H, TFT_DARKGREY);
-            tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+            tft.fillRect(0, tableY, tftWidth, CLIENT_HEADER_H, TFT_NAVY);
+            tft.setTextColor(TFT_WHITE, TFT_NAVY);
             tft.drawString("CLIENT MAC", leftX + 2, tableY + 1, 1);
             tft.drawString("SEEN", rightX + 10, tableY + 1, 1);
             tft.drawString("STATUS", tftWidth - 50, tableY + 1, 1);
 
-            // ----- Client Rows (สลับสี) -----
+            // ----- Client Rows (zebra, แถวคี่ TFT_DARKGREY) -----
             tableY += CLIENT_HEADER_H;
             int shown = 0;
             for (auto &c : g_clients) {
                 if (shown >= MAX_ROWS) break;
                 uint16_t rowY = tableY + shown * ROW_H;
+                // แถวคู่ (0,2,4) = พื้นหลังปกติ, แถวคี่ (1,3,5) = DARKGREY
                 uint16_t rowBg = (shown % 2 == 0) ? bruceConfig.bgColor : TFT_DARKGREY;
                 tft.fillRect(0, rowY, tftWidth, ROW_H, rowBg);
 
+                // สร้างข้อความ MAC + OUI
                 char macstr[18];
                 snprintf(macstr, sizeof(macstr), "%02X:%02X:%02X:%02X:%02X:%02X",
                          c.mac[0], c.mac[1], c.mac[2], c.mac[3], c.mac[4], c.mac[5]);
+                String oui = getOUI(c.mac);
+                String clientStr = String(macstr);
+                if (oui.length() > 0) clientStr += " " + oui; // เช่น "AA:BB:CC:DD:EE:FF Apple"
+
                 tft.setTextColor(TFT_WHITE, rowBg);
-                tft.drawString(macstr, leftX + 4, rowY + 1, 1);
+                tft.drawString(clientStr, leftX + 4, rowY + 1, 1);
                 tft.setTextColor(TFT_YELLOW, rowBg);
                 tft.drawString(String((millis() - c.last_seen) / 1000) + "s", rightX + 12, rowY + 1, 1);
                 tft.setTextColor(c.active ? TFT_GREEN : TFT_RED, rowBg);
@@ -969,12 +1023,9 @@ void target_atk(String tssid, String mac, uint8_t channel) {
                 shown++;
             }
 
-            // Footer
-            tft.setTextColor(TFT_DARKGREY, bruceConfig.bgColor);
-            tft.drawString("[ESC] Stop   [OK] Pause", 4, tftHeight - 10, 1);
-
+            // รีเซ็ต counter และเวลาสำหรับ UI refresh
             count = 0;
-            lastTime = millis();
+            lastTime = millis();  // เริ่มนับถอยหลังใหม่
         }
     }
 
