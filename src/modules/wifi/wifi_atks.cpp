@@ -163,23 +163,28 @@ static uint8_t g_targetBssid[6];
 static std::vector<ClientInfo> g_clients;
 #define CLIENT_TIMEOUT 10000  // 10 วินาที
 
-// Callback สำหรับตรวจจับ client
 void promisc_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t*)buf;
-    wifi_ieee80211_packet_t *ipkt = (wifi_ieee80211_packet_t*)pkt->payload;
+    uint8_t *payload = pkt->payload;
 
-    // สนใจเฉพาะ Data packets (type 2)
-    if (ipkt->hdr.frame_control.type == 2) {
-        uint8_t *src = ipkt->hdr.addr2;
-        uint8_t *dst = ipkt->hdr.addr1;
+    // Frame Control field: 2 bytes ที่ offset 0
+    uint8_t frameType = (payload[0] >> 2) & 0x03;  // Type bits 2-3
 
-        // ตรวจสอบว่ามีฝั่งใดฝั่งหนึ่งเป็น AP เป้าหมาย
-        bool from_ap = (memcmp(src, g_targetBssid, 6) == 0);
-        bool to_ap   = (memcmp(dst, g_targetBssid, 6) == 0);
+    // สนใจเฉพาะ Data frames (type = 2)
+    if (frameType == 2) {
+        // Address fields ใน 802.11 header:
+        // Addr1 = destination (offset 4)
+        // Addr2 = source      (offset 10)
+        uint8_t *addr1 = payload + 4;
+        uint8_t *addr2 = payload + 10;
+
+        // เช็คว่าเกี่ยวข้องกับ AP เป้าหมายหรือไม่
+        bool from_ap = (memcmp(addr2, g_targetBssid, 6) == 0);
+        bool to_ap   = (memcmp(addr1, g_targetBssid, 6) == 0);
 
         if (from_ap || to_ap) {
             // เลือก MAC ของ client (ฝั่งที่ไม่ใช่ AP)
-            uint8_t *client_mac = from_ap ? dst : src;
+            uint8_t *client_mac = from_ap ? addr1 : addr2;
 
             // หาใน list
             bool found = false;
@@ -201,6 +206,7 @@ void promisc_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
         }
     }
 }
+
 
 /***************************************************************************************
 ** Function: send_raw_frame
