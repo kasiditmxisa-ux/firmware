@@ -834,7 +834,6 @@ String getOUI(uint8_t *mac) {
 }
 
 //-----------[Main]-----------------
-
 void target_atk(String tssid, String mac, uint8_t channel) {
     resetGlobalState();
     cleanlyStopWebUiForWiFiFeature();
@@ -859,28 +858,21 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     esp_wifi_set_promiscuous_rx_cb(promisc_callback);
     esp_wifi_set_promiscuous(true);
 
-    // Layout constants (320x240) — เพิ่ม GRAPH_HEIGHT
+    // Layout constants (320x240)
     const uint8_t TOP_MARGIN = 2;
-    const uint8_t INFO_H = 60;
-    const uint8_t GRAPH_H = 20;                // ความสูงกราฟคลื่น
+    const uint8_t INFO_H = 55;
+    const uint8_t GRAPH_H = 35;         // Waterfall height
     const uint8_t CLIENT_HEADER_H = 14;
     const uint8_t ROW_H = 14;
-    const uint8_t MAX_ROWS = 6;
+    const uint8_t MAX_ROWS = 5;
     const uint8_t TABLE_Y = TOP_MARGIN + INFO_H + GRAPH_H + CLIENT_HEADER_H;
-
-    // กราฟ history (160 จุด, scale ให้เต็มความกว้าง 320px ด้วย factor 2)
-    static int fpsHistory[160] = {0};
-    static uint16_t histIdx = 0;
-    const uint16_t HIST_SIZE = 160;
-    const uint8_t GRAPH_X = 0;                  // เริ่มซ้ายสุด
-    const uint8_t GRAPH_Y = TOP_MARGIN + INFO_H; // ใต้ Info Section
-    const uint8_t GRAPH_W = tftWidth;           // เต็มความกว้าง
+    const uint8_t GRAPH_Y = TOP_MARGIN + INFO_H;
 
     uint32_t lastUIUpdate = 0;
     uint16_t count = 0;
     uint32_t totalFrames = 0;
     unsigned long startTime = millis();
-    bool isPaused = true;               // เริ่มต้น Pause
+    bool isPaused = true;
     bool lastSel = false;
 
     // Scroll offsets (marquee)
@@ -905,7 +897,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
         bool selNow = check(SelPress);
         if (selNow && !lastSel) {
             isPaused = !isPaused;
-            lastUIUpdate = 0; // บังคับวาด UI ใหม่ทันที
+            lastUIUpdate = 0;
         }
         lastSel = selNow;
         if (EscPress) break;
@@ -941,17 +933,14 @@ void target_atk(String tssid, String mac, uint8_t channel) {
         // ===== อัปเดต scroll offsets ทุก 0.8 วิ =====
         if (millis() - lastScrollUpdate > SCROLL_INTERVAL_MS) {
             lastScrollUpdate = millis();
-            // (AP/MAC/Client scroll logic เหมือนเดิม)
-            if (tssid.length() > 18) { // AP_MAXCHARS
+            if (tssid.length() > 18) {
                 apScrollOffset++;
                 if (apScrollOffset > tssid.length() - 18 + 1) apScrollOffset = 0;
             } else apScrollOffset = 0;
-
             if (mac.length() > 13) {
                 macScrollOffset++;
                 if (macScrollOffset > mac.length() - 13 + 1) macScrollOffset = 0;
             } else macScrollOffset = 0;
-
             for (auto &c : g_clients) {
                 char macShort[10]; snprintf(macShort, sizeof(macShort), "%02X:%02X:%02X", c.mac[0], c.mac[1], c.mac[2]);
                 String oui = getOUI(c.mac); String full = String(macShort); if (oui.length()>0) full += " " + oui;
@@ -1009,14 +998,12 @@ void target_atk(String tssid, String mac, uint8_t channel) {
 
             // ---- คอลัมน์ซ้าย (AP, MAC, Ch, FPS) ----
             tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
-            // AP scroll
             {
                 String apFull = "AP: " + tssid;
                 String apDisp = apFull;
                 if (tssid.length() > 18) apDisp = "AP: " + tssid.substring(apScrollOffset, apScrollOffset + 18);
                 tft.drawString(apDisp, leftX, yLeft, 1); yLeft += 12;
             }
-            // MAC scroll
             {
                 String macFull = "MAC: " + mac;
                 String macDisp = macFull;
@@ -1024,7 +1011,6 @@ void target_atk(String tssid, String mac, uint8_t channel) {
                 tft.drawString(macDisp, leftX, yLeft, 1); yLeft += 12;
             }
             tft.drawString("Ch: " + String(channel) + " (" + String(2400+channel) + "MHz)", leftX, yLeft, 1); yLeft += 12;
-            // FPS
             int fpsValue = count / 2;
             uint16_t fpsColor = (fpsValue > 3000) ? TFT_GREEN : (fpsValue > 1000) ? TFT_YELLOW : TFT_RED;
             tft.setTextColor(fpsColor, bruceConfig.bgColor);
@@ -1037,7 +1023,6 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             char timeBuf[10]; snprintf(timeBuf, sizeof(timeBuf), "%02lu:%02lu", elapsed/60, elapsed%60);
             tft.drawString("Time: " + String(timeBuf), rightX, yRight, 1); yRight += 12;
 
-            // Deauth indicator
             tft.drawString("Deauth:", rightX, yRight, 1);
             uint16_t circleX = rightX + 52, circleY = yRight + 6;
             if (!isPaused && (millis() / 500) % 2) tft.fillCircle(circleX, circleY, 3, TFT_GREEN);
@@ -1045,36 +1030,60 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             tft.drawString(isPaused ? "OFF" : "ON", rightX + 60, yRight, 1);
             yRight += 12;
 
-            // Client count
             int activeCount = 0;
             for (auto &c : g_clients) if (c.active) activeCount++;
             tft.drawString("Clients: " + String(activeCount), rightX, yRight, 1); yRight += 12;
-
-            // Total frames
             tft.drawString("Total: " + String(totalFrames), rightX, yRight, 1);
 
-            // ===== วาดกราฟคลื่น =====
-            // เพิ่ม FPS ลง history
-            fpsHistory[histIdx] = fpsValue;
-            histIdx = (histIdx + 1) % HIST_SIZE;
+            // ===== Waterfall Spectrogram (FPS-driven) =====
+            {
+                tft.fillRect(0, GRAPH_Y, tftWidth, GRAPH_H, TFT_BLACK);
 
-            // ลบพื้นที่กราฟ
-            tft.fillRect(GRAPH_X, GRAPH_Y, GRAPH_W, GRAPH_H, TFT_BLACK);
-            // วาดคลื่น
-            const int FPS_MAX = 6000; // ค่าสูงสุดที่คาดไว้
-            for (int i = 0; i < HIST_SIZE - 1; i++) {
-                int idx1 = (histIdx + i) % HIST_SIZE;
-                int idx2 = (histIdx + i + 1) % HIST_SIZE;
-                int val1 = fpsHistory[idx1];
-                int val2 = fpsHistory[idx2];
-                int y1 = map(val1, 0, FPS_MAX, GRAPH_Y + GRAPH_H - 1, GRAPH_Y + 1);
-                int y2 = map(val2, 0, FPS_MAX, GRAPH_Y + GRAPH_H - 1, GRAPH_Y + 1);
-                // เลือกสีตามค่าเฉลี่ย
-                int avg = (val1 + val2) / 2;
-                uint16_t color = TFT_GREEN;
-                if (avg > 4000) color = TFT_RED;
-                else if (avg > 2000) color = TFT_YELLOW;
-                tft.drawLine(i * 2, y1, (i + 1) * 2, y2, color);
+                // Map FPS 0..6000 → line length 2..GRAPH_H-2
+                int lineLen = map(fpsValue, 0, 6000, 2, GRAPH_H - 4);
+                if (lineLen < 2) lineLen = 2;
+                if (lineLen > GRAPH_H - 4) lineLen = GRAPH_H - 4;
+                int lineTop = GRAPH_Y + (GRAPH_H - lineLen) / 2;
+                int midX = tftWidth / 2;
+
+                // Glow layers (เส้นแนวตั้งกลาง)
+                for (int w = 4; w >= 1; w--) {
+                    uint16_t col;
+                    if (w == 4) col = tft.color565(30, 30, 150);
+                    else if (w == 3) col = tft.color565(60, 60, 200);
+                    else if (w == 2) col = tft.color565(120, 120, 255);
+                    else col = TFT_WHITE;
+                    tft.drawFastVLine(midX - w/2, lineTop - w/2, lineLen + w, col);
+                }
+                // จุดเรืองแสงกลาง
+                int dotY = lineTop + lineLen/2;
+                tft.fillCircle(midX, dotY, 2, TFT_WHITE);
+                tft.fillCircle(midX, dotY, 4, tft.color565(50, 50, 180));
+                tft.fillCircle(midX, dotY, 6, tft.color565(20, 20, 100));
+
+                // Noise density ตาม FPS (มาก FPS = มาก noise)
+                int noiseCount = map(fpsValue, 0, 6000, 10, 80);
+                for (int i = 0; i < noiseCount; i++) {
+                    int x = esp_random() % tftWidth;
+                    int y = GRAPH_Y + (esp_random() % GRAPH_H);
+                    uint8_t bri = 50 + (esp_random() % 150);
+                    tft.drawPixel(x, y, tft.color565(bri, bri, 255));
+                }
+
+                // เส้นแนวนอนบางๆ (คลื่น)
+                for (int i = 0; i < 5; i++) {
+                    int y = GRAPH_Y + (esp_random() % GRAPH_H);
+                    tft.drawFastHLine(0, y, tftWidth, tft.color565(0, 100, 200));
+                    tft.drawFastHLine(0, y-1, tftWidth, tft.color565(0, 50, 100));
+                    tft.drawFastHLine(0, y+1, tftWidth, tft.color565(0, 50, 100));
+                }
+
+                // แถบหนากลาง (แนวนอน) สีฟ้าขาว — ปรับความสว่างตาม FPS
+                int bandBright = map(fpsValue, 0, 6000, 30, 200);
+                uint16_t bandColor = tft.color565(bandBright/2, bandBright, bandBright);
+                tft.fillRect(0, GRAPH_Y + GRAPH_H/2 - 2, tftWidth, 5, bandColor);
+                // Glow บนล่าง
+                tft.fillRect(0, GRAPH_Y + GRAPH_H/2 - 3, tftWidth, 7, tft.color565(bandBright/4, bandBright/2, bandBright/2));
             }
 
             // เส้นคั่นใต้กราฟ
