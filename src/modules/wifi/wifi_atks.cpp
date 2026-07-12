@@ -834,6 +834,7 @@ String getOUI(uint8_t *mac) {
 }
 
 //-----------[Main]-----------------
+
 void target_atk(String tssid, String mac, uint8_t channel) {
     resetGlobalState();
     cleanlyStopWebUiForWiFiFeature();
@@ -856,13 +857,11 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     esp_wifi_set_promiscuous(true);
 
     const uint8_t TOP_MARGIN = 2;
-    const uint8_t INFO_H = 55;
-    const uint8_t GRAPH_H = 35;
+    const uint8_t INFO_H = 60;                // ไม่มีกราฟ จึงใช้ความสูงปกติ
     const uint8_t CLIENT_HEADER_H = 14;
     const uint8_t ROW_H = 14;
-    const uint8_t MAX_ROWS = 5;
-    const uint8_t TABLE_Y = TOP_MARGIN + INFO_H + GRAPH_H + CLIENT_HEADER_H;
-    const uint8_t GRAPH_Y = TOP_MARGIN + INFO_H;
+    const uint8_t MAX_ROWS = 6;               // คืนเป็น 6 แถว เพราะมีพื้นที่มากขึ้น
+    const uint8_t TABLE_Y = TOP_MARGIN + INFO_H + CLIENT_HEADER_H;
 
     uint32_t lastUIUpdate = 0;
     uint16_t count = 0;
@@ -1014,48 +1013,9 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             tft.drawString("Clients: " + String(activeCount), rightX, yRight, 1); yRight += 12;
             tft.drawString("Total: " + String(totalFrames), rightX, yRight, 1);
 
-            // ═══════ Waterfall ═══════
-            {
-                tft.fillRect(0, GRAPH_Y, tftWidth, GRAPH_H, tft.color565(2, 5, 10));
-                for (int i = 0; i < 60; i++) {
-                    int x = random(tftWidth), y = GRAPH_Y + random(GRAPH_H);
-                    uint8_t b = random(40, 120);
-                    tft.drawPixel(x, y, tft.color565(0, b/2, b));
-                }
-                for (int i = 0; i < 5; i++) {
-                    int y = GRAPH_Y + random(GRAPH_H);
-                    tft.drawFastHLine(0, y, tftWidth, tft.color565(0, 20, 60));
-                    tft.drawFastHLine(0, y-1, tftWidth, tft.color565(0, 10, 40));
-                    tft.drawFastHLine(0, y+1, tftWidth, tft.color565(0, 10, 40));
-                }
-                for (int i = 0; i < 15; i++) {
-                    int y = GRAPH_Y + random(GRAPH_H);
-                    uint8_t in = random(50, 140);
-                    tft.drawFastHLine(0, y, tftWidth, tft.color565(0, in/2, in));
-                    if (y > GRAPH_Y)      tft.drawFastHLine(0, y-1, tftWidth, tft.color565(0, in/4, in/2));
-                    if (y < GRAPH_Y + GRAPH_H - 1) tft.drawFastHLine(0, y+1, tftWidth, tft.color565(0, in/4, in/2));
-                }
-                int cy = GRAPH_Y + GRAPH_H/2;
-                for (int o = 4; o <= 8; o += 2) {
-                    if (cy - o >= GRAPH_Y) {
-                        tft.drawFastHLine(0, cy-o, tftWidth, tft.color565(0, 30, 90));
-                        tft.drawFastHLine(0, cy-o-1, tftWidth, tft.color565(0, 15, 60));
-                        tft.drawFastHLine(0, cy-o+1, tftWidth, tft.color565(0, 15, 60));
-                    }
-                    if (cy + o < GRAPH_Y + GRAPH_H) {
-                        tft.drawFastHLine(0, cy+o, tftWidth, tft.color565(0, 30, 90));
-                        tft.drawFastHLine(0, cy+o-1, tftWidth, tft.color565(0, 15, 60));
-                        tft.drawFastHLine(0, cy+o+1, tftWidth, tft.color565(0, 15, 60));
-                    }
-                }
-                tft.fillRect(0, cy-3, tftWidth, 7, tft.color565(0, 40, 110));
-                tft.fillRect(0, cy-2, tftWidth, 5, tft.color565(0, 100, 220));
-                tft.fillRect(0, cy-1, tftWidth, 3, tft.color565(50, 200, 255));
-                tft.drawFastHLine(0, cy, tftWidth, tft.color565(0xEA, 0xFB, 0xFF));
-                tft.fillCircle(tftWidth/2, cy, 2, TFT_WHITE);
-                tft.fillCircle(tftWidth/2, cy, 3, tft.color565(0xEA, 0xFB, 0xFF));
-            }
-            tft.drawFastHLine(0, GRAPH_Y + GRAPH_H, tftWidth, TFT_DARKGREY);
+            // ═══════ ไม่มี Waterfall อีกต่อไป ═══════
+            // เส้นคั่นเบา ๆ เหนือ Client Table
+            tft.drawFastHLine(0, TABLE_Y - 1, tftWidth, TFT_DARKGREY);
 
             uint8_t tableY = TABLE_Y;
             tft.fillRect(0, tableY, tftWidth, CLIENT_HEADER_H, TFT_NAVY);
@@ -1095,7 +1055,6 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     wifi_atk_unsetWifi();
     returnToMenu = true;
 }
-
 
 void generateRandomWiFiMac(uint8_t *mac) {
     for (int i = 1; i < 6; i++) { mac[i] = random(0, 255); }
